@@ -1,55 +1,52 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "../../firebase"; // Import Firebase utils
-import { useAuth } from "../../AuthContext"; // Import the AuthContext
+import { registerUser, loginUser } from "../../Api/Auth";
+import { useAuth } from "../../AuthContext"; // Your own context that accepts a token
 import Navbar from "../Navbar/Navbar";
 import Footer from "../Footer/Footer";
 import styles from "../../css/Login.module.css";
 
 const OwnerRegister: React.FC = () => {
-  const { login } = useAuth(); // Access the login function from the context
-  const [name, setName] = useState<string>("");
-  const [email, setEmail] = useState<string>("");
-  const [password, setPassword] = useState<string>("");
-  const [retypePassword, setRetypePassword] = useState<string>(""); // State for re-type password
-  const [error, setError] = useState<string>("");
+  const { login } = useAuth();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [retypePassword, setRetypePassword] = useState("");
+  const [error, setError] = useState("");
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault(); // Prevent the default form submission
+    e.preventDefault();
 
     if (password !== retypePassword) {
       setError("Passwords do not match.");
-      return; // Stop form submission if passwords don't match
+      return;
     }
 
     try {
-      // Create user in Firebase Authentication
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-
-      const user = userCredential.user;
-
-      // Create user data in Firestore under "owners" collection
-      await setDoc(doc(db, "owners", user.uid), {
+      // Register user via custom API
+      await registerUser({
         name,
-        email,
-        role: "owner",
-        createdAt: new Date(),
+        type: "owner",
+        username_email: email,
+        password,
+        masterPassword: "5hnd..jk4ne!kwjs?wnsmmf", // or ask the user for it if needed
       });
 
-      // After user is created, log them in to update the user context
-      await login(email, password);
+      // Log in to get token
+      const { access_token } = await loginUser({
+        username_email: email,
+        password,
+      });
 
-      // Redirect to Dashboard
+      // Save token to localStorage or context
+      login(access_token);
+
+      // Redirect
       navigate("/ownerBase/ownerDashboard");
-    } catch (error: any) {
-      setError(error.message);
+    } catch (err: any) {
+      console.error(err);
+      setError("Failed to register user.");
     }
   };
 
@@ -66,15 +63,14 @@ const OwnerRegister: React.FC = () => {
             {error}
           </div>
         )}
-
         <form className="mt-4" onSubmit={handleSubmit}>
+          {/* Same form inputs */}
           <div className="mb-3">
             <label className={`${styles.formLabel} form-label`}>Name</label>
             <input
               type="text"
               value={name}
               className={`${styles.formInput} form-control`}
-              id="exampleInputEmail1"
               onChange={(e) => setName(e.target.value)}
               required
             />
@@ -87,7 +83,6 @@ const OwnerRegister: React.FC = () => {
               type="email"
               value={email}
               className={`${styles.formInput} form-control`}
-              id="exampleInputEmail1"
               onChange={(e) => setEmail(e.target.value)}
               required
             />
@@ -98,7 +93,6 @@ const OwnerRegister: React.FC = () => {
               type="password"
               value={password}
               className={`${styles.formInput} form-control`}
-              id="exampleInputPassword1"
               onChange={(e) => setPassword(e.target.value)}
               required
             />
@@ -109,34 +103,19 @@ const OwnerRegister: React.FC = () => {
             </label>
             <input
               type="password"
-              className={`${styles.formInput} form-control`}
-              id="exampleInputPassword2"
               value={retypePassword}
-              onChange={(e) => setRetypePassword(e.target.value)} // Handle re-type password
+              className={`${styles.formInput} form-control`}
+              onChange={(e) => setRetypePassword(e.target.value)}
               required
             />
           </div>
           <div className="mb-3 form-check">
-            <input
-              type="checkbox"
-              className="form-check-input"
-              id="exampleCheck1"
-              required
-            />
+            <input type="checkbox" className="form-check-input" required />
             <label className="form-check-label">
-              I have read and agree to the{" "}
-              <Link className="text-decoration-none" to="/">
-                Terms and Conditions
-              </Link>{" "}
-              and{" "}
-              <Link className="text-decoration-none" to="/">
-                Privacy Policy
-              </Link>
-              .
+              I agree to the <Link to="/">Terms</Link> and{" "}
+              <Link to="/">Privacy</Link>.
             </label>
           </div>
-
-          {/* Show error message */}
           <div className="mb-3 mt-4">
             <button type="submit" className={`${styles.primaryButton} btn`}>
               Register
