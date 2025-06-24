@@ -1,11 +1,10 @@
-// components/ProtectedRoute.tsx
+// components/PrivateRoute.tsx
 import { Navigate } from "react-router-dom";
-import { useAuth } from "./AuthContext";
+import { useAuth } from "./AuthContext"; // Adjust path if needed
 import Unauthorized from "./components/Unauthorized";
-import { JSX } from "react";
 
 interface PrivateRouteProps {
-  children: JSX.Element;
+  children: React.ReactElement;
   allowedRoles: string[];
 }
 
@@ -13,7 +12,8 @@ const PrivateRoute: React.FC<PrivateRouteProps> = ({
   children,
   allowedRoles,
 }) => {
-  const { user, role } = useAuth();
+  const { user } = useAuth();
+  const role = user?.role;
 
   if (!user) {
     return <Navigate to="/login" replace />;

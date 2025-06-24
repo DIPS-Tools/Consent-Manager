@@ -1,9 +1,13 @@
+// src/components/Login/Login.tsx
+
 import React, { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "../../AuthContext"; // Import AuthContext
+import { loginUser } from "../../Api/Auth";
+import { useAuth } from "../../AuthContext";
 import Navbar from "../Navbar/Navbar";
 import Footer from "../Footer/Footer";
 import styles from "../../css/Login.module.css";
+import { jwtDecode } from "jwt-decode";
 
 const Login: React.FC = () => {
   const [email, setEmail] = useState("");
@@ -11,18 +15,21 @@ const Login: React.FC = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const { user, role, login } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (user && role) {
-      if (role === "owner") {
-        navigate("/ownerBase/ownerDashboard");
-      } else if (role === "requester") {
-        navigate("/requesterBase/requesterDashboard");
-      }
+    if (!user) return;
+
+    const role = user.role;
+    console.log("Redirecting with role:", role);
+
+    if (role === "provider") {
+      navigate("/ownerBase/ownerDashboard", { replace: true });
+    } else if (role === "consumer") {
+      navigate("/requesterBase/requesterDashboard", { replace: true });
     }
-  }, [user, role, navigate]);
+  }, [user?.role, navigate]); // <- DEPEND ON user?.role
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,28 +37,28 @@ const Login: React.FC = () => {
     setLoading(true);
 
     try {
-      await login(email, password);
-      // Redirect happens in useEffect
+      console.log("Attempting login with", email);
+      const { access_token } = await loginUser({
+        username_email: email,
+        password,
+      });
+
+      console.log("Received access token:", access_token);
+      console.log("Decoded token:", jwtDecode(access_token));
+
+      login(access_token); // Sets context and triggers useEffect
+      console.log("Login called, access_token set.");
+
+      // TEMPORARY TEST — does this redirect immediately?
+      // navigate("/ownerBase/ownerDashboard", { replace: true });
     } catch (err: any) {
-      let errorMessage = "Login failed. Please try again.";
-
-      if (err.code) {
-        switch (err.code) {
-          case "auth/user-not-found":
-            errorMessage = "No account found with this email.";
-            break;
-          case "auth/invalid-credential":
-            errorMessage = "Incorrect email or password.";
-            break;
-          case "auth/too-many-requests":
-            errorMessage = "Too many attempts. Please wait and try again.";
-            break;
-        }
-      }
-
-      setError(errorMessage);
+      console.error("Login error:", err.response?.data || err.message);
+      setError(err.message || "Login failed. Please try again.");
+    } finally {
       setLoading(false);
     }
+
+    console.log("Login.tsx: user =", user);
   };
 
   return (
@@ -62,11 +69,13 @@ const Login: React.FC = () => {
         <p className="mt-3">
           Don't have an account? <Link to="/getStarted">Sign up</Link>
         </p>
+
         {error && (
           <div className="alert alert-danger mt-3" role="alert">
             {error}
           </div>
         )}
+
         <form className="mt-4" onSubmit={handleSubmit}>
           <div className="mb-3">
             <label className={`${styles.formLabel} form-label`}>
@@ -81,6 +90,7 @@ const Login: React.FC = () => {
               disabled={loading}
             />
           </div>
+
           <div className="mb-3">
             <label className={`${styles.formLabel} form-label`}>Password</label>
             <input
@@ -103,7 +113,6 @@ const Login: React.FC = () => {
                 {loading ? "Signing in..." : "Sign in"}
               </button>
             </div>
-
             <div className="align-self-center">
               <Link to="">I forgot my password.</Link>
             </div>

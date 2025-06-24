@@ -33,8 +33,13 @@ import UploadOntology from "./components/Requester/UploadOntology";
 import Unauthorized from "./components/Unauthorized";
 import RequesterSentRequestsDetails from "./components/Requester/RequesterSentRequestDetails";
 import RequesterProfile from "./components/Requester/Profile/RequesterProfile";
-import Test from "./Test";
 import ImportRequest from "./components/Requester/ImportRequest";
+
+// testing
+import Test from "./Test";
+import UserList from "./UserList";
+import AllUserDetails from "./AllUserDetails";
+
 // Context
 import { AuthProvider } from "./AuthContext";
 
@@ -52,12 +57,14 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/ownerOtp" element={<OwnerOtp />} />
           <Route path="/unauthorized" element={<Unauthorized />} />
           <Route path="/test" element={<Test />} />
+          <Route path="/userList" element={<UserList />} />
+          <Route path="/allUserDetails" element={<AllUserDetails />} />
 
           {/* owner */}
           <Route
             path="/ownerBase"
             element={
-              <PrivateRoute allowedRoles={["owner"]}>
+              <PrivateRoute allowedRoles={["provider"]}>
                 <OwnerBase />
               </PrivateRoute>
             }
@@ -89,7 +96,7 @@ createRoot(document.getElementById("root")!).render(
           <Route
             path="/requesterBase"
             element={
-              <PrivateRoute allowedRoles={["requester"]}>
+              <PrivateRoute allowedRoles={["consumer"]}>
                 <RequesterBase />
               </PrivateRoute>
             }

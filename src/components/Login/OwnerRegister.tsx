@@ -27,7 +27,7 @@ const OwnerRegister: React.FC = () => {
       // Register user via custom API
       await registerUser({
         name,
-        type: "owner",
+        type: "provider",
         username_email: email,
         password,
         masterPassword: "5hnd..jk4ne!kwjs?wnsmmf", // or ask the user for it if needed
@@ -46,7 +46,7 @@ const OwnerRegister: React.FC = () => {
       navigate("/ownerBase/ownerDashboard");
     } catch (err: any) {
       console.error(err);
-      setError("Failed to register user.");
+      setError(err.message || "Failed to register user.");
     }
   };
 

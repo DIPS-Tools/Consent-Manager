@@ -22,7 +22,8 @@ interface TokenPayload {
 interface AuthContextType {
   token: string | null;
   user: TokenPayload | null;
-  login: (token: string) => void; // ✅ just takes the token now
+  role: string | null;
+  login: (token: string) => void;
   logout: () => void;
 }
 
@@ -72,6 +73,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     localStorage.setItem("token", token);
     setToken(token);
     setUser(decoded);
+    console.log("Decoded token inside AuthContext:", decoded);
   };
 
   const logout = () => {
@@ -81,7 +83,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ token, user, login, logout }}>
+    <AuthContext.Provider
+      value={{ token, user, role: user?.role || null, login, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );

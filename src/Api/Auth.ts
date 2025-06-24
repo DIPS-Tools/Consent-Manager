@@ -3,7 +3,6 @@ import axios from "axios";
 
 const API_URL = "https://dips.soton.ac.uk/negotiation-api";
 
-// src/Api/Auth.ts
 export const registerUser = async ({
   name,
   type,
@@ -12,23 +11,34 @@ export const registerUser = async ({
   masterPassword,
 }: {
   name: string;
-  type: "owner" | "consumer";
+  type: "provider" | "consumer";
   username_email: string;
   password: string;
   masterPassword: string;
 }) => {
-  const res = await axios.post(
-    `https://dips.soton.ac.uk/negotiation-api/user/register?master_password_input=${encodeURIComponent(
-      masterPassword
-    )}`,
-    {
-      name,
-      type,
-      username_email,
-      password,
+  try {
+    const res = await axios.post(
+      `${API_URL}/user/register?master_password_input=${encodeURIComponent(
+        masterPassword
+      )}`,
+      {
+        name,
+        type,
+        username_email,
+        password,
+      }
+    );
+    return res.data;
+  } catch (error: any) {
+    console.error("Register error:", error.response?.data || error.message);
+    if (error.response?.data?.detail?.[0]?.msg) {
+      throw new Error(error.response.data.detail[0].msg);
     }
-  );
-  return res.data;
+    if (error.response?.data?.detail) {
+      throw new Error(JSON.stringify(error.response.data.detail));
+    }
+    throw new Error("Registration failed");
+  }
 };
 
 export const loginUser = async ({
@@ -38,9 +48,18 @@ export const loginUser = async ({
   username_email: string;
   password: string;
 }) => {
-  const res = await axios.post(`${API_URL}/user/login`, {
-    username_email,
-    password,
+  const params = new URLSearchParams();
+  params.append("username", username_email);
+  params.append("password", password);
+  // Optionally:
+  // params.append("grant_type", "");
+  // params.append("scope", "");
+
+  const res = await axios.post(`${API_URL}/user/login/`, params, {
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
   });
-  return res.data; // { access_token: string }
+
+  return res.data; // This should return the access token
 };
