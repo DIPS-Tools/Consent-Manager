@@ -34,6 +34,7 @@ function CreateRequest() {
 
   const [formData, setFormData] = useState({
     requestName: "",
+    nlp: "",
   });
 
   const [actionOptions, setActionOptions] = useState<Option[]>([]);
@@ -90,7 +91,9 @@ function CreateRequest() {
   };
 
   const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+    e: React.ChangeEvent<
+      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+    >
   ) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -183,7 +186,7 @@ function CreateRequest() {
             aria-valuemin={0}
             aria-valuemax={100}
           >
-            {stepTitles[step]}
+            {/* Removed progress text */}
           </div>
         </div>
       </div>
@@ -785,6 +788,20 @@ function CreateRequest() {
         {/* Step 3 */}
         {step === 2 && (
           <>
+            <div className="mb-3">
+              <label className={`${styles.formLabel} form-label`}>
+                NLP Description (Optional)
+              </label>
+              <textarea
+                name="nlp"
+                value={formData.nlp}
+                className={`${styles.formInput} form-control`}
+                onChange={handleChange}
+                rows={4}
+                placeholder="Write a natural language summary of the request"
+              />
+            </div>
+
             <p className="text-muted mt-4">
               Bofore you create your request please make sure that all your
               permissions and refinements are correct. Wrong values can lead to

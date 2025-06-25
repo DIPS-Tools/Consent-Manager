@@ -5,6 +5,7 @@ import { Refinement } from "./PermissionsUtils";
 
 interface RequestData {
   requestName: string;
+  nlp?: string; // ✅ add this line
   permissions: {
     dataset: string;
     datasetRefinements: Refinement[];
