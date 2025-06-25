@@ -40,6 +40,7 @@ const RequesterRegister: React.FC = () => {
         email,
         role: "requester",
         createdAt: new Date(),
+        ontologies: ["default"],
       });
 
       // 3. Register the user with your backend API
@@ -82,7 +83,7 @@ const RequesterRegister: React.FC = () => {
     <>
       <Navbar />
       <div className={`${styles.loginBox} container w-25 p-5 shadow rounded`}>
-        <h3>Register as a data requester</h3>
+        <h3>Register as a data requesters</h3>
         <p className="mt-3">
           Already have an account? <Link to="/login">Login</Link>
         </p>
