@@ -1,7 +1,6 @@
 import express from "express";
 import { db } from "../config/firebase.js";
-import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import { Request, Response } from "express";
 import fetch from "node-fetch";
 import { permissionsToODRLPolicy } from "../../src/utils/policyParser.ts"
 
@@ -320,38 +319,34 @@ router.post(
         body: JSON.stringify(payload),
       });
 
-      const data: any = await response.json();
+        if (!response.ok) {
+          return res.status(response.status).json({
+            success: false,
+            error: data.message || "Failed to create contract",
+          });
+        }
 
-      if (!response.ok) {
-        return res.status(response.status).json({
+        res.json(data);
+      } catch (err: any) {
+        console.error("Error creating contract:", err);
+        res.status(500).json({
           success: false,
           error: data.message || "Failed to create contract at: " + externalApiUrl,
         });
       }
-
-      res.json(data);
-    } catch (err: any) {
-      console.error("Error creating contract:", err);
-      res.status(500).json({
-        success: false,
-        error: "Failed to create contract",
-        details: err.message || String(err),
-      });
     }
-  }
 );
 
 // GET /api/requests/:requestId/contract
 router.get(
-  "/:requestId/contract",
-  authorizeRequest,
-  async (req: AuthRequest, res) => {
-    const { requestId } = req.params; // matches middleware
-    const requestSnap = await db.collection("requests").doc(requestId).get();
-    const contractId = requestSnap.data()?.contractId || null;
+    "/:requestId/contract",
+    async (req: Request, res) => {
+      const { requestId } = req.params; // matches middleware
+      const requestSnap = await db.collection("requests").doc(requestId).get();
+      const contractId = requestSnap.data()?.contractId || null;
 
-    res.json({ success: true, contractId });
-  }
+      res.json({ success: true, contractId });
+    }
 );
 
 // GET /api/requests/:requestId/GetContract/:contractId
@@ -470,44 +465,7 @@ router.get(
           error: "Not authorized to download this contract",
         });
       }
-
-      // --- Download the contract from external API ---
-      const contractServiceUrl =
-        process.env.CONTRACT_SERVICE_URL ||
-        "https://dips.soton.ac.uk/contract-service-api";
-      const response = await fetch(
-        `${contractServiceUrl}/contract/download/${contractId}`,
-        {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return res.status(response.status).json({
-          success: false,
-          error: `External API error: ${errorText}`,
-        });
-      }
-
-      const contractBuffer = await response.arrayBuffer();
-
-      // --- Send the file ---
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=contract_${contractId}.pdf`
-      );
-      res.setHeader("Content-Type", "application/pdf");
-      res.send(Buffer.from(contractBuffer));
-    } catch (err) {
-      console.error("Error downloading contract:", err);
-      res
-        .status(500)
-        .json({ success: false, error: "Failed to download contract" });
     }
-  }
 );
 
 export default router;
