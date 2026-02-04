@@ -41,6 +41,10 @@ function CreateRequest() {
 
   const [actionOptions, setActionOptions] = useState<Option[]>([]);
   const [purposeOptions, setPurposeOptions] = useState<Option[]>([]);
+  const [actionRefinementsOptions, setActionRefinementsOptions] = useState<Option[]>([]);
+  const [purposeRefinementsOptions, setPurposeRefinementsOptions] = useState<Option[]>([]);
+  const [datasetRefinementsOptions, setDatasetRefinementsOptions] = useState<Option[]>([]);
+  const [generalRefinementsOptions, setGeneralRefinementsOptions] = useState<Option[]>([]);
 
   useEffect(() => {
     const loadOntologies = async () => {
@@ -67,6 +71,7 @@ function CreateRequest() {
   }, [user]); // Depend on user to reload when auth state changes
 
   useEffect(() => {
+    console.log("Loading actions and purposes for ontologies.");
     const loadDropdownValues = async () => {
       const actions = await getFeatureDropdownValue(
         selectedOntologies,
@@ -76,9 +81,18 @@ function CreateRequest() {
         selectedOntologies,
         "purpose"
       );
+      // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+      const actionRefinements = await getAttributeDropdownValue(selectedOntologies);
+      const purposeRefinements = await getAttributeDropdownValue(selectedOntologies);
+      const datasetRefinements = await getAttributeDropdownValue(selectedOntologies);
+      const generalRefinements = await getAttributeDropdownValue(selectedOntologies);
 
       setActionOptions(actions);
       setPurposeOptions(purposes);
+      setActionRefinementsOptions(actionRefinements);
+      setPurposeRefinementsOptions(purposeRefinements);
+      setDatasetRefinementsOptions(datasetRefinements);
+      setGeneralRefinementsOptions(generalRefinements);
     };
 
     loadDropdownValues();
@@ -397,7 +411,7 @@ function CreateRequest() {
                           }
                           required
                         >
-                          {getAttributeDropdownValue().map((option) => (
+                          {datasetRefinementsOptions.map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>
@@ -514,7 +528,7 @@ function CreateRequest() {
                               }
                               required
                             >
-                              {getAttributeDropdownValue().map((option) => (
+                              {actionRefinementsOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
@@ -630,7 +644,7 @@ function CreateRequest() {
                               }
                               required
                             >
-                              {getAttributeDropdownValue().map((option) => (
+                              {purposeRefinementsOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
@@ -723,7 +737,7 @@ function CreateRequest() {
                           }
                           required
                         >
-                          {getAttributeDropdownValue().map((option) => (
+                          {generalRefinementsOptions.map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>
