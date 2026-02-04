@@ -761,6 +761,8 @@ function OwnerPendingRequestsDetails() {
     if (!requestDetails || !user) return;
 
     log.info("test");
+    log.info("upconsent/src/components/Owner/OwnerPendingRequestDetails.tsx ");
+    log.info("user info", user);
 
     const requestsResult = await getRequests({
       uid: user.uid,
@@ -790,6 +792,7 @@ function OwnerPendingRequestsDetails() {
       if (result.success) {
         const updatedRequest = {
           ...requestDetails,
+          // policy: we must get a policy object here.
           ownersPending: updatedOwnersPending,
           ownersAccepted: updatedOwnersAccepted,
           status: "accepted",
@@ -801,7 +804,7 @@ function OwnerPendingRequestsDetails() {
         try {
           const contractResult = await createContractAPI({
             id: requestId!, // make sure requestId exists
-            policy: updatedRequest.policy,
+            policy: updatedRequest.permissions, //policy doesn't exist, will replace with permissions in the meantime and see what happens.
           });
           console.log("Contract created successfully:", contractResult);
 
@@ -818,6 +821,8 @@ function OwnerPendingRequestsDetails() {
           }
         } catch (contractError) {
           console.error("Error creating contract:", contractError);
+          // If something goes wrong, we revert the request to its previous state.
+          await updateRequest(requestId!, requestDetails);
         }
         console.log("user comes from: ", user.loginSource);
         console.log("number of requests is: ", userRequestsCount);

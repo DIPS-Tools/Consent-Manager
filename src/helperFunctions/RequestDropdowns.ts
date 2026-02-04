@@ -1,4 +1,5 @@
 import { getOntologies } from "../services/api";
+import * as rdflib from "rdflib";
 
 export interface Option {
   value: string;
@@ -74,72 +75,130 @@ export const fetchOntologies = async (requesterUid?: string): Promise<Ontology[]
 
 // dropdown options of the custom ontologies
 // the default ontology is always fetched by default
-export const getFeatureDropdownValue = async (
-  ontologies: Ontology[],
-  type: "action" | "purpose"
-): Promise<Option[]> => {
-  const result: Option[] = [];
-
-  for (const ontology of ontologies) {
-    if (type === "action") {
-      result.push({ value: ontology.id, label: `${ontology.name} (Action)` });
-    } else if (type === "purpose") {
-      result.push({ value: ontology.id, label: `${ontology.name} (Purpose)` });
-    }
-  }
-
-  return result;
-};
-
 // export const getFeatureDropdownValue = async (
 //   ontologies: Ontology[],
 //   type: "action" | "purpose"
 // ): Promise<Option[]> => {
-//   const store = $rdf.graph();
+//   const result: Option[] = [];
 
 //   for (const ontology of ontologies) {
-//     try {
-//       $rdf.parse(
-//         ontology.content,
-//         store,
-//         "http://example.org/base#",
-//         "text/turtle"
-//       );
-//     } catch (e) {
-//       console.error("Failed to parse ontology:", e);
+//     if (type === "action") {
+//       result.push({ value: ontology.id, label: `${ontology.name} (Action)` });
+//     } else if (type === "purpose") {
+//       result.push({ value: ontology.id, label: `${ontology.name} (Purpose)` });
 //     }
 //   }
 
-//   const literals = new Set<string>();
-//   store.statements.forEach((st) => {
-//     if (st.object.termType === "Literal") {
-//       const value = st.object.value.toLowerCase();
-//       if (value.startsWith("a")) {
-//         literals.add(st.object.value);
-//       }
-//     }
-//   });
-
-//   const words = Array.from(literals);
-
-//   if (type === "action") {
-//     return words.map((word, index) => ({
-//       value: `action-${index}`,
-//       label: word,
-//     }));
-//   }
-
-//   if (type === "purpose") {
-//     return words.map((word, index) => ({
-//       value: `purpose-${index}`,
-//       label: word,
-//     }));
-//   }
-
-//   return [];
+//   return result;
 // };
 
-export const getAttributeDropdownValue = (): Option[] => {
+export const getFeatureDropdownValue = async (
+  ontologies: Ontology[],
+  type: "action" | "purpose"
+): Promise<Option[]> => {
+  const store = rdflib.graph();
+
+  for (const ontology of ontologies) {
+      const textStream = ontology.content;
+      const rdf_formats = ["text/turtle", "text/n3", "application/rdf+xml", "application/ld+json", "application/n-quads", "application/n-triples",  "application/xml", "application/json"];
+
+      let success = false;
+      for (let mimetype of rdf_formats) {
+        try{
+          rdflib.parse(textStream, store, "http://example.org/base#", mimetype);
+          success = true
+          break;
+        }
+        catch (e){
+          console.log("Tried: ", mimetype);
+          continue;
+        }
+      }
+      if (!success) {
+        console.error("Failed to parse ontology:", ontology.name);
+      } 
+  }
+
+  if (type === "action") {
+    // NOTE: Currently, we can only retrieve actions that are explicitly odrl:Action or dpv:Processing.
+    const sparql_action_query = `
+    SELECT DISTINCT ?variable ?value 
+    WHERE { ?variable <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/odrl/2/Action> . 
+    ?variable <http://www.w3.org/2000/01/rdf-schema#label> ?value . }`;
+    const sparql_action_query_2 = `
+    SELECT DISTINCT ?variable ?value 
+    WHERE { ?variable <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/dpv/owl#Processing> . 
+    ?variable <http://www.w3.org/2000/01/rdf-schema#label> ?value . }`;
+    const query = rdflib.SPARQLToQuery(sparql_action_query, false, store);
+    const query2 = rdflib.SPARQLToQuery(sparql_action_query_2, false, store);
+    //@ts-ignore
+    let ans = store.querySync(query);
+    //@ts-ignore
+    let ans2 = store.querySync(query2);
+    ans = ans.concat(ans2);
+    return ans.map((binding) => ({
+      value: binding['?variable'].value,
+      label: binding['?value'].value,
+    }));
+  }
+
+  if (type === "purpose") {
+    const sparql_purpose_query = `
+    SELECT ?value 
+    WHERE {
+    ?variable <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://w3id.org/dpv/owl#Purpose> . 
+    ?variable <http://www.w3.org/2000/01/rdf-schema#label> ?value . }`;
+    const query = rdflib.SPARQLToQuery(sparql_purpose_query, false, store);
+    //@ts-ignore
+    let ans = store.querySync(query);
+    return ans.map((binding) => ({
+      value: binding['?variable'].value,
+      label: binding['?value'].value,
+    }));
+  }
+
+  return [];
+};
+
+export const getAttributeDropdownValue = async (
+  ontologies: Ontology[],
+): Promise<Option[]> => {
+  const store = rdflib.graph();
+
+  for (const ontology of ontologies) {
+      const textStream = ontology.content;
+      const rdf_formats = ["text/turtle", "text/n3", "application/rdf+xml", "application/ld+json", "application/n-quads", "application/n-triples",  "application/xml", "application/json"];
+
+      let success = false;
+      for (let mimetype of rdf_formats) {
+        try{
+          rdflib.parse(textStream, store, "http://example.org/base#", mimetype);
+          success = true
+          break;
+        }
+        catch (e){
+          console.log("Tried: ", mimetype);
+          continue;
+        }
+      }
+      if (!success) {
+        console.error("Failed to parse ontology:", ontology.name);
+      } 
+  }
+  const sparql_left_operands_query = `
+    SELECT ?value 
+    WHERE {
+    ?variable <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/ns/odrl/2/LeftOperand> . 
+    ?variable <http://www.w3.org/2000/01/rdf-schema#label> ?value . }`;
+    const query = rdflib.SPARQLToQuery(sparql_left_operands_query, false, store);
+    //@ts-ignore
+    let ans = store.querySync(query);
+    if (ans.length > 0) {
+      return ans.map((binding) => ({
+      value: binding['?variable'].value,
+      label: binding['?value'].value,
+    }));
+    }
   return [
     { value: "", label: "Choose attribute" },
     { value: "comercial", label: "Comercial" },
@@ -150,7 +209,7 @@ export const getAttributeDropdownValue = (): Option[] => {
 
 export const getOperandDropdownValue = (): Option[] => {
   return [
-    { value: "", label: "Choose instance" },
+    { value: "", label: "Choose an operator" },
     { value: "eq", label: "eq" },
     { value: "gt", label: "gt" },
     { value: "gteq", label: "gteq" },

@@ -26,6 +26,8 @@ if (!admin.apps.length) {
         process.env.FIREBASE_STORAGE_EMULATOR_HOST = process.env.EMULATOR_STORAGE_HOST;
       }
 
+      console.log("Variable: ",process.env.EMULATOR_FIRESTORE_HOST);
+
       // For emulator, use local service account with upconsent project ID
       console.log("🔧 Using Firebase Emulator mode");
       console.log("  - FIRESTORE_EMULATOR_HOST:", process.env.FIRESTORE_EMULATOR_HOST);
@@ -35,10 +37,17 @@ if (!admin.apps.length) {
       const localServiceAccountPath = join(__dirname, '../../firebase-admin-key.local.json');
       const localServiceAccount = JSON.parse(readFileSync(localServiceAccountPath, 'utf8'));
 
+      //admin.initializeApp({
+      //  credential: admin.credential.cert(localServiceAccount),
+      //  projectId: "upconsent",
+      //});
+
       admin.initializeApp({
-        credential: admin.credential.cert(localServiceAccount),
+    	credential: admin.credential.cert(localServiceAccount),
         projectId: "upconsent",
+        storageBucket: "upconsent.firebasestorage.app",
       });
+
     } else {
       // Production Firebase mode
       console.log("🚀 Using Production Firebase");
