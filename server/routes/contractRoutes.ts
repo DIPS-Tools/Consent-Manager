@@ -2,7 +2,6 @@ import express from "express";
 import { db } from "../config/firebase.js";
 import { Request, Response } from "express";
 import fetch from "node-fetch";
-import { permissionsToODRLPolicy } from "../../src/utils/policyParser.ts"
 
 const router = express.Router();
 
@@ -125,22 +124,15 @@ export async function authorizeRequest(
     }
 
     const requestData = requestSnap.data();
-    console.log("Token payload is: ", tokenPayload);
-    console.log("User data is: ", userData);
-    console.log("Request data is: ", JSON.stringify(requestData));
     const ownerDocs = db.collection("owners");
     const ownerEmails: string[] = [];
     await ownerDocs.get().then((querySnapshot) => {
         querySnapshot.forEach((doc) => {
-          console.log("doc is: ", doc);
           ownerEmails.push( 
             //id: doc.id, 
             doc.data().email )
         })
     });
-    console.log(ownerEmails);
-    console.log(userData.email);
-    console.log(ownerEmails.includes(userData.email));
     // This follows the assumption that emails are unique.
     const ownsRequest =
       (role === "owner" && ownerEmails.includes(userData.email)) ||
@@ -171,8 +163,6 @@ router.post(
       const { requestId } = req.params;
       const { policy } = req.body;
 
-      console.log("AuthRequest Info", req);
-
       console.log("Fetching request to verify existence.");
       // --- Fetch the request to verify existence ---
       const requestSnap = await db.collection("requests").doc(requestId).get();
@@ -194,8 +184,8 @@ router.post(
       const naturalLanguageDocument = naturalLanguageFields.join("\n\n");
       console.log("Preparing payload");
 
-      const odrlPolicy = permissionsToODRLPolicy(requestId, req.user.uid, requestData?.requester.requesterId, policy);
-      console.log("This is the ODRL policy: ", JSON.stringify(odrlPolicy));
+      // const odrlPolicy = permissionsToODRLPolicy(requestId, req.user.uid, requestData?.requester.requesterId, policy);
+      // console.log("This is the ODRL policy: ", JSON.stringify(odrlPolicy));
       //get user details:
       const negotiationApiUrl =
         process.env.EXTERNAL_API_BASE_URL ||
@@ -277,10 +267,16 @@ router.post(
       //add another items, which is not retrieved form Negotiation!
       contacts.provider = {
         ...contacts.provider,
-        citizen: "UK (this is a fixed value, need to be set according to payload)",
+        citizen: "UK (this is a fixed value, need to be set according to payload, will be fixing)",
         passport_id: "NO222222 (this is a fixed value, need to be set according to payload)",
       };
 
+      // Assign the provider's unique id to the policy as an ODRL assigner.
+      if (policy["odrl:permission"] instanceof Array) {
+          policy["odrl:permission"].forEach(permission => {
+          permission["odrl:assigner"] = {"odrl:source": {"@id": providerUid}}
+        });
+      }
 
       console.log("Resolved contacts for contract payload:", contacts);
 
@@ -299,7 +295,7 @@ router.post(
         definitions: {},
         custom_clauses: {},
         dpw: {},
-        odrl: odrlPolicy,
+        odrl: policy,
         nlp: naturalLanguageDocument || "",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
