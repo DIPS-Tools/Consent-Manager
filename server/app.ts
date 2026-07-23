@@ -27,13 +27,26 @@ console.log(
   `Server starting with limits: JSON=${JSON_LIMIT}, URL=${URL_LIMIT}`
 );
 
-// Configure helmet with conditional iframe support
+// Keep Swagger assets on HTTP for direct, non-TLS deployments.
+const defaultSecurityHeaders = helmet();
+const swaggerSecurityHeaders = helmet({
+  contentSecurityPolicy: {
+    directives: {
+      "upgrade-insecure-requests": null,
+    },
+  },
+  strictTransportSecurity: false,
+});
+
+// Configure helmet with conditional iframe and Swagger support.
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/auth/token")) {
     // Skip helmet entirely for auth endpoints to allow iframe embedding
     next();
+  } else if (req.path.startsWith("/docs")) {
+    swaggerSecurityHeaders(req, res, next);
   } else {
-    helmet()(req, res, next);
+    defaultSecurityHeaders(req, res, next);
   }
 });
 
