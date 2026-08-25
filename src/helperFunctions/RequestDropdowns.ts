@@ -1,5 +1,6 @@
 import { getOntologies } from "../services/api";
 import * as rdflib from "rdflib";
+import { TFunction } from "i18next";
 
 export interface Option {
   value: string;
@@ -11,11 +12,10 @@ export type Ontology = {
   _id: string;
   name: string;
   content: string;
+  isDefault: boolean;
 };
 
 export const fetchOntologies = async (requesterUid?: string): Promise<Ontology[]> => {
-  if (!requesterUid) throw new Error("User not authenticated");
-
   try {
     console.log("Fetching ontologies for user:", requesterUid);
     
@@ -38,8 +38,8 @@ export const fetchOntologies = async (requesterUid?: string): Promise<Ontology[]
 
     // Process ontologies and fetch their content
     const ontologyDocs = await Promise.all(
-      ontologyData.map(async (ontologyItem: any) => {
-        const { _id, name, content } = ontologyItem;
+      ontologyData.map(async (ontologyItem: Ontology) => {
+        const { _id, name, content, isDefault } = ontologyItem;
         console.log(`Processing ontology ${_id}: ${name}, URL: ${content}`);
 
         if (!content) {
@@ -47,7 +47,7 @@ export const fetchOntologies = async (requesterUid?: string): Promise<Ontology[]
           return { _id, name, content: "No content found" };
         }
 
-        return { _id, name, content};
+        return { _id, name, content, isDefault};
       })
     );
 
@@ -79,12 +79,8 @@ export const fetchOntologies = async (requesterUid?: string): Promise<Ontology[]
 //   return result;
 // };
 
-export const getFeatureDropdownValue = async (
-  ontologies: Ontology[],
-  type: "action" | "purpose"
-): Promise<Option[]> => {
+export const loadGraph = async (ontologies: Ontology[]): Promise<rdflib.Store> => {
   const store = rdflib.graph();
-
   for (const ontology of ontologies) {
       const textStream = JSON.stringify(ontology.content); //This is now guaranteed to be in JSON-LD.
       try {
@@ -108,6 +104,15 @@ export const getFeatureDropdownValue = async (
         console.error("Failed to parse ontology:", ontology.name, e);
       }
   }
+  return store;
+}
+
+export const getFeatureDropdownValue = async (
+  store: rdflib.Store,
+  type: "action" | "purpose"
+): Promise<Option[]> => {
+  const language = localStorage.getItem("language") || "en"; 
+  console.log("Language:", language);
 
   if (type === "action") {
     // NOTE: Currently, we can only retrieve actions that are explicitly odrl:Action or dpv:Processing.
@@ -126,6 +131,7 @@ export const getFeatureDropdownValue = async (
     //@ts-ignore
     let ans2 = store.querySync(query2);
     ans = ans.concat(ans2);
+    ans = ans.filter((binding) => (binding['?value'].language === language));
     return ans.map((binding, index) => (
       index === 0 ?
       {
@@ -149,6 +155,7 @@ export const getFeatureDropdownValue = async (
     const query = rdflib.SPARQLToQuery(sparql_purpose_query, false, store);
     //@ts-ignore
     let ans = store.querySync(query);
+    ans = ans.filter((binding) => (binding['?value'].language === language));
     return ans.map((binding, index) => (
       index === 0 ?
       {
@@ -167,34 +174,9 @@ export const getFeatureDropdownValue = async (
 };
 
 export const getAttributeDropdownValue = async (
-  ontologies: Ontology[],
+  store: rdflib.Store,
 ): Promise<Option[]> => {
-  const store = rdflib.graph();
-
-  for (const ontology of ontologies) {
-      const textStream = JSON.stringify(ontology.content); //This is now guaranteed to be in JSON-LD.
-      try {
-        await new Promise<void>((resolve, reject) => {
-          rdflib.parse(
-            textStream,
-            store,
-            "http://example.org/base#",
-            "application/ld+json",
-            (error) => {
-              if (error) {
-                reject(error);
-                return;
-              }
-              console.log("Parsing successful:", ontology.name);
-              resolve();
-            }
-          );
-        });
-      } catch (e) {
-        console.error("Failed to parse ontology:", ontology.name, e);
-      }
-  }
-
+  const language = localStorage.getItem("language") || "en";
   const sparql_left_operands_query = `
     SELECT ?value 
     WHERE {
@@ -203,6 +185,7 @@ export const getAttributeDropdownValue = async (
     const query = rdflib.SPARQLToQuery(sparql_left_operands_query, false, store);
     //@ts-ignore
     let ans = store.querySync(query);
+    ans = ans.filter((binding) => (binding['?value'].language === language));
     if (ans.length > 0) {
       return ans.map((binding) => ({
       value: binding['?variable'].value,
@@ -217,21 +200,21 @@ export const getAttributeDropdownValue = async (
   ];
 };
 
-export const getOperandDropdownValue = (): Option[] => {
+export const getOperandDropdownValue = (language: TFunction): Option[] => {
   return [
-    { value: "", label: "Choose an operator" },
-    { value: "odrl:eq", label: "equals" },
-    { value: "odrl:gt", label: "greater than" },
-    { value: "odrl:gteq", label: "greater than or equal to" },
-    { value: "odrl:hasPart", label: "has part" },
-    { value: "odrl:isA", label: "is a" },
-    { value: "odrl:isAllOf", label: "is all of" },
-    { value: "odrl:isAnyOf", label: "is any of" },
-    { value: "odrl:isNoneOf", label: "is none of" },
-    { value: "odrl:isPartOf", label: "is part of" },
-    { value: "odrl:lt", label: "less than" },
-    { value: "odrl:lteq", label: "less than or equal to" },
-    { value: "odrl:neq", label: "not equal to" },
+    { value: "", label: language("choose_an_operator") },
+    { value: "odrl:eq", label: language("equals") },
+    { value: "odrl:gt", label: language("gt") },
+    { value: "odrl:gteq", label: language("geq") },
+    { value: "odrl:hasPart", label: language("hasPart") },
+    { value: "odrl:isA", label: language("isA") },
+    { value: "odrl:isAllOf", label: language("isAllOf") },
+    { value: "odrl:isAnyOf", label: language("isAnyOf") },
+    { value: "odrl:isNoneOf", label: language("isNoneOf") },
+    { value: "odrl:isPartOf", label: language("isPartOf") },
+    { value: "odrl:lt", label: language("lt") },
+    { value: "odrl:lteq", label: language("leq") },
+    { value: "odrl:neq", label: language("neq") },
   ];
 };
 

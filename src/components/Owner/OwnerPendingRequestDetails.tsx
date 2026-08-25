@@ -12,6 +12,7 @@ import {
   getRequests,
 } from "../../services/api";
 import log from "loglevel";
+import * as rdflib from "rdflib";
 
 log.setLevel("debug");
 import { Request } from "../Interfaces/Requests";
@@ -22,6 +23,9 @@ import styles from "../../css/Ontology.module.css";
 // components
 import LoadingSpinner from "../LoadingSpinner";
 import renderPermissions from "../../utils/renderPermissions";
+import { useTranslation } from "react-i18next";
+import { fetchOntologies, getAttributeDropdownValue, getFeatureDropdownValue, loadGraph } from "../../helperFunctions/RequestDropdowns";
+import { Ontology } from "../Interfaces/Ontology";
 
 function OwnerPendingRequestDetails() {
   const { requestId } = useParams<{ requestId: string }>();
@@ -36,6 +40,29 @@ function OwnerPendingRequestDetails() {
     useState<boolean>(false);
   const [autoRedirectAttempted, setAutoRedirectAttempted] =
     useState<boolean>(false);
+  const { t, i18n } = useTranslation();
+  const [labels, setLabels] = useState<any>();
+  const [graph, setGraph] = useState<rdflib.Store>();
+    
+  useEffect(() => {
+    const loadLabels = async () => {
+      if (graph){
+        const actions = await getFeatureDropdownValue(
+          graph,
+          "action"
+        );
+        const purposes = await getFeatureDropdownValue(
+          graph,
+          "purpose"
+        );
+        // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+        const refinements = await getAttributeDropdownValue(graph);
+        const labels = actions.concat(purposes).concat(refinements);
+        setLabels(labels);
+      }
+    };
+    loadLabels();
+  },[graph, i18n.language]);
 
   useEffect(() => {
     const fetchRequestDetails = async () => {
@@ -50,6 +77,12 @@ function OwnerPendingRequestDetails() {
 
         if (result.success) {
           setRequestDetails(result.data as Request);
+          let ontologies = await fetchOntologies() as Ontology[];
+          if (requestDetails?.selectedOntologies) {
+            ontologies = ontologies.concat(requestDetails.selectedOntologies);
+          }
+          const store = await loadGraph(ontologies);
+          setGraph(store);
 
           // Check if there's an existing negotiation for this request
           try {
@@ -769,7 +802,7 @@ function OwnerPendingRequestDetails() {
 
   if (loading) return <LoadingSpinner />;
   if (error) return <div className="text-danger">{error}</div>;
-  if (!requestDetails) return <div>No request details found.</div>;
+  if (!requestDetails) return <div>{t("no_request_details_found")}</div>;
 
   return (
     <>
@@ -783,13 +816,13 @@ function OwnerPendingRequestDetails() {
             to="/ownerBase/ownerPendingRequests"
             role="button"
           >
-            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
           </Link>
         )}
         <h3 className={isIframeMode ? "mt-2" : "mt-4"}>
           {requestDetails.requestName}
         </h3>
-        <h5 className="mt-4 mb-3">Requester details</h5>
+        <h5 className="mt-4 mb-3">{t("requester_details")}</h5>
         <p>
           <i className="fa-solid fa-user me-3"></i>
           {requestDetails.requester.requesterName}
@@ -803,11 +836,10 @@ function OwnerPendingRequestDetails() {
           {requestDetails.extraText ? requestDetails.extraText : ""}
         </text>
 
-        {renderPermissions(requestDetails)}
+        {renderPermissions(requestDetails, t, labels)}
 
         <div className="alert alert-warning" role="alert">
-          If you are unsure whether to accept, reject or negotiate the request,
-          please contact the data provider.
+          {t("pending_request_disclaimer")}
         </div>
 
         {/* Show negotiation info if exists */}
@@ -815,10 +847,10 @@ function OwnerPendingRequestDetails() {
           <div className="alert alert-info" role="alert">
             <div className="d-flex justify-content-between align-items-center">
               <div>
-                <strong>Negotiation Available</strong>
+                <strong>{t("negotiation_available")}</strong>
                 <br />
                 <small>
-                  This consent request has an associated negotiation (ID:{" "}
+                  {t("negotiation_available_text_1")} (ID:{" "}
                   {negotiationInfo.negotiationId})
                 </small>
               </div>
@@ -828,7 +860,7 @@ function OwnerPendingRequestDetails() {
                   onClick={viewNegotiation}
                   disabled={checkingNegotiation}
                 >
-                  {checkingNegotiation ? "Loading..." : "View Negotiation"}
+                  {checkingNegotiation ? `${t("loading")}...` : t("view_negotiation")}
                 </button>
               )}
             </div>
@@ -844,7 +876,7 @@ function OwnerPendingRequestDetails() {
                 data-bs-toggle="modal"
                 data-bs-target="#acceptRequestModal"
               >
-                Accept
+                {t("accept")}
               </button>
             </div>
             <div className="ms-3">
@@ -854,7 +886,7 @@ function OwnerPendingRequestDetails() {
                 data-bs-target="#negotiateRequestModal"
                 disabled={updating}
               >
-                {updating ? "Processing..." : "Negotiate"}
+                {updating ? `${t("processing")}...` : t("negotiate")}
               </button>
             </div>
 
@@ -865,7 +897,7 @@ function OwnerPendingRequestDetails() {
                 data-bs-target="#rejectRequestModal"
                 disabled={updating}
               >
-                {updating ? "Processing..." : "Reject"}
+                {updating ? `${t("processing")}...` : t("reject")}
               </button>
             </div>
           </div>
@@ -875,15 +907,14 @@ function OwnerPendingRequestDetails() {
         {isIframeMode && negotiationInfo && (
           <div className="text-center mt-4">
             <div className="spinner-border text-primary" role="status">
-              <span className="visually-hidden">Loading...</span>
+              <span className="visually-hidden">{t("loading")}...</span>
             </div>
-            <p className="mt-2">Opening negotiation dashboard...</p>
-            <small className="text-muted">This will open in a new tab</small>
+            <p className="mt-2">{t("opening_negotiation_dashboard")}...</p>
+            <small className="text-muted">{t("this_will_open_a_new_tab")}</small>
             <div className="mt-3">
               <p className="text-muted small">
                 <i className="fa-solid fa-circle-info me-1"></i>
-                If the tab doesn't open, please check your browser's pop-up
-                blocker
+                {t("new_tab_troubleshoot")}
               </p>
               <button
                 className={`${styles.primaryButton} btn btn-sm mt-2`}
@@ -891,8 +922,8 @@ function OwnerPendingRequestDetails() {
                 disabled={checkingNegotiation}
               >
                 {checkingNegotiation
-                  ? "Opening..."
-                  : "Open Negotiation Manually"}
+                  ? `${t("opening")}...`
+                  : t("opening_negotiation_manually")}
               </button>
             </div>
           </div>
@@ -912,7 +943,7 @@ function OwnerPendingRequestDetails() {
         <div className="modal-dialog">
           <div className="modal-content">
             <div className="modal-header">
-              <h5 className="modal-title">Acceptance Confirmation</h5>
+              <h5 className="modal-title">{t("acceptance_confirmation")}</h5>
               <button
                 type="button"
                 className="btn-close"
@@ -920,21 +951,21 @@ function OwnerPendingRequestDetails() {
               ></button>
             </div>
             <div className="modal-body">
-              Are you sure you want to approve this request?
+              {t("acceptance_confirmation_text_1")}
             </div>
             <div className="modal-footer">
               <button
                 className={`${styles.secondaryButton} btn`}
                 data-bs-dismiss="modal"
               >
-                Cancel
+                {t("cancel")}
               </button>
               <button
                 className={`${styles.primaryButton} btn`}
                 onClick={acceptRequest}
                 disabled={updating}
               >
-                {updating ? "Approving..." : "Approve"}
+                {updating ? `${t("approving")}...` : t("approve")}
               </button>
             </div>
           </div>
@@ -952,7 +983,7 @@ function OwnerPendingRequestDetails() {
         <div className="modal-dialog">
           <div className="modal-content">
             <div className="modal-header">
-              <h5 className="modal-title">Disclaimer</h5>
+              <h5 className="modal-title">{t("disclaimer")}</h5>
               <button
                 type="button"
                 className="btn-close"
@@ -960,21 +991,21 @@ function OwnerPendingRequestDetails() {
               ></button>
             </div>
             <div className="modal-body">
-              This action will redirect you to the negotiation plugin.
+              {t("redirect_to_negotiation_plugin")}
             </div>
             <div className="modal-footer">
               <button
                 className={`${styles.secondaryButton} btn`}
                 data-bs-dismiss="modal"
               >
-                Cancel
+                {t("cancel")}
               </button>
               <button
                 className={`${styles.primaryButton} btn`}
                 onClick={negotiateRequest}
                 disabled={updating}
               >
-                {updating ? "Redirecting..." : "Continue"}
+                {updating ? `${t("redirecting")}...` : t("continue")}
               </button>
             </div>
           </div>
@@ -992,7 +1023,7 @@ function OwnerPendingRequestDetails() {
         <div className="modal-dialog">
           <div className="modal-content">
             <div className="modal-header">
-              <h5 className="modal-title">Confirm Rejection</h5>
+              <h5 className="modal-title">{t("confirm_rejection")}</h5>
               <button
                 type="button"
                 className="btn-close"
@@ -1000,21 +1031,21 @@ function OwnerPendingRequestDetails() {
               ></button>
             </div>
             <div className="modal-body">
-              <p>Are you sure you want to reject this request?</p>
+              <p>{t("confirm_rejection_text_1")}</p>
             </div>
             <div className="modal-footer">
               <button
                 className={`${styles.secondaryButton} btn`}
                 data-bs-dismiss="modal"
               >
-                Cancel
+                {t("cancel")}
               </button>
               <button
                 className={`${styles.dangerButton} btn`}
                 onClick={rejectRequest}
                 disabled={updating}
               >
-                {updating ? "Rejecting..." : "Confirm"}
+                {updating ? `${t("rejecting")}...` : t("confirm")}
               </button>
             </div>
           </div>

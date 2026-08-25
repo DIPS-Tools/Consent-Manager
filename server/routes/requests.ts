@@ -3,7 +3,7 @@ import { db } from "../config/database.service.ts";
 import { Collection, Document, ObjectId, WithId } from "mongodb";
 import { permissionsToODRLPolicy } from "../utils/policyParser.ts";
 import { verify } from "../config/keycloak.ts";
-import { RequestEmail, VerificationEmail } from "../../emails/templates/requestDetails.tsx";
+import { RequestEmail, VerificationEmail } from "../../emails/templates/requestDetails";
 import { sendTestEmail } from "../config/nodemailer.ts";
 import { jwtVerify, SignJWT } from "jose";
 import { RequestData } from "../../src/components/Interfaces/Requests.ts";
@@ -11,6 +11,12 @@ import crypto from "crypto";
 
 const router = express.Router();
 const secret = new TextEncoder().encode(process.env.EMAIL_LINK_SECRET!);
+
+interface UserInputData {
+  email: string,
+  name?: string, 
+  id?: string 
+}
 
 // POST /api/requests - Create a new request
 router.post("/", async (req, res) => {
@@ -444,7 +450,7 @@ router.post("/:id/accept", async (req, res) => {
       });
     }
 
-    const userDoc = await db.collection("users").findOne({'username_email': {$eq: user_email}});
+    const userDoc = await db.collection("users").findOne({'email': {$eq: user_email}});
 
     if (!userDoc) {
       return res.status(404).json({
@@ -547,7 +553,7 @@ router.post("/:id/reject", async (req, res) => {
       }
     }
 
-    const userDoc = await db.collection("users").findOne({'username_email': {$eq: verification.email}});
+    const userDoc = await db.collection("users").findOne({'email': {$eq: verification.email}});
 
     if (!userDoc) {
       return res.status(404).json({
@@ -630,9 +636,11 @@ router.post("/:id/reject", async (req, res) => {
 router.post("/:id/send", async (req, res) => {
   try {
     const { id } = req.params;
-    let userDocs: WithId<Document>[] | null = null;
+    let userDocs: WithId<Document>[] | null = [];
     let test_email_urls = [];
-    let unregisteredOwners: String[] = []
+    let unregisteredOwners: UserInputData[] = []
+    let lang = req.body.language || "en";
+    const email_sender = process.env.DEFAULT_EMAIL_SENDER || "DIPS Consent Manager <dips-consent-manager@soton.ac.uk>";
 
     if (!req.headers.authorization?.startsWith("Bearer ")) {
       console.error("Missing bearer token.")
@@ -646,12 +654,14 @@ router.post("/:id/send", async (req, res) => {
       const ownersPendingIds = req.body.ownersPending.map((o : string) => new ObjectId(o));
       userDocs = await db.collection("users").find({_id: {$in: ownersPendingIds}}).toArray();
     }
-    else if (req.body.user_emails) {
-      const user_emails = req.body.user_emails;
-      userDocs = await db.collection("users").find({'username_email': {$in: user_emails}}).toArray();
-      unregisteredOwners = userDocs && userDocs.length > 0 ? user_emails.filter((o: String) => !userDocs?.some((doc) => doc.username_email === o)) : user_emails;
+    if (req.body.user_details) {
+      const user_details = req.body.user_details;
+      console.log(`User details: ${user_details}`);
+      const user_emails = user_details.map((user: UserInputData) => user.email);
+      userDocs = userDocs.concat(await db.collection("users").find({'email': {$in: user_emails}}).toArray());
+      unregisteredOwners = userDocs && userDocs.length > 0 ? user_details.filter((o: UserInputData) => !userDocs?.some((doc) => doc.email === o.email)) : user_details;
     }
-    else {
+    if (!req.body.ownersPending && !req.body.user_emails) {
       console.error("Request body has no owners pending or user emails.")
       return res.status(400).json({
         success: false,
@@ -742,11 +752,11 @@ router.post("/:id/send", async (req, res) => {
         .setExpirationTime("7d")
         .sign(secret);
 
-        const email_content = RequestEmail(requestDoc, userId, email_token);
+        const email_content = RequestEmail(requestDoc, userId, email_token, lang);
 
         const email_details = {
-            from: 'DIPS Consent Manager <dips-consent-manager@soton.ac.uk>',
-            to: userDoc.username_email,
+            from: email_sender,
+            to: userDoc.email,
             subject: 'Consent Request',
             html: email_content,
           }
@@ -759,16 +769,18 @@ router.post("/:id/send", async (req, res) => {
     }
 
     for (const owner of unregisteredOwners) {
-      const userDoc = await db.collection("users").findOne({'username_email': {$eq: owner}});
+      const userDoc = await db.collection("users").findOne({'email': {$eq: owner.email}});
       if (userDoc) {
         console.log(`Email address already registered to user ${userDoc._id}`);
         continue;
       }
       else {
+        console.log(`Attempting to send email to ${owner}`);
         const random_token = crypto.randomBytes(32).toString("hex");
         const token_payload = {
-          email: owner,
+          owner: owner,
           requestId: id,
+          language: lang,
           action: "confirm",
           token: random_token,
           createdAt: new Date(),
@@ -782,17 +794,20 @@ router.post("/:id/send", async (req, res) => {
         const insert_token = await db.collection("tokens").insertOne(token_payload);
         
         if (insert_token) {
-          const email_content = VerificationEmail(requestDoc, email_token);
+          const email_content = VerificationEmail(requestDoc, email_token, lang);
 
           const email_details = {
-              from: 'DIPS Consent Manager <dips-consent-manager@soton.ac.uk>',
-              to: owner,
+              from: email_sender,
+              to: owner.email,
               subject: 'Consent Request',
               html: email_content,
             }
           const email_result = await sendTestEmail(email_details);
           console.log("Email result:", email_result.url);
           test_email_urls.push(email_result.url);
+        }
+        else{
+          console.log("Unable to insert new token.");
         }
       }
     }

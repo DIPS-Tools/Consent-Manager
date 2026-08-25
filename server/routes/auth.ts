@@ -4,7 +4,11 @@ import "express-session";
 import keycloak, { login, verify } from "../config/keycloak.ts";
 import { ObjectId } from "mongodb";
 import { sendTestEmail } from "../config/nodemailer.ts";
-import { decodeJwt, jwtVerify } from "jose";
+import { decodeJwt, jwtVerify, SignJWT } from "jose";
+import ChangePasswordEmail from "../../emails/templates/changePassword.ts";
+import crypto from "crypto";
+import { ExpiredChangePasswordEmail, ExpiredVerificationEmail } from "../../emails/templates/expiredLink.ts";
+import { RequestData } from "../../src/components/Interfaces/Requests.ts";
 
 declare module "express-session" {
   interface SessionData {
@@ -15,6 +19,14 @@ declare module "express-session" {
 
 const router = express.Router();
 const secret = new TextEncoder().encode(process.env.EMAIL_LINK_SECRET!);
+const email_sender = process.env.DEFAULT_EMAIL_SENDER || "DIPS Consent Manager <dips-consent-manager@soton.ac.uk>";
+
+interface UserRecord{
+  _id: string,
+  type: "consumer" | "provider",
+  name: string,
+  email: string,
+}
 
 // POST /api/auth/login - User login with keycloak
 router.post("/login", async (req, res) => {
@@ -67,28 +79,47 @@ router.post("/login", async (req, res) => {
               }
             );
 
-            const userDoc = await db.collection("users").findOne({username_email: {$eq: email}});
+            const userDoc = await db.collection("users").findOne({email: {$eq: email}});
 
             console.log("User details response:",userDetailsResponse);
             console.log("User doc: ", userDoc);
 
             if (userDetailsResponse.ok) {
-              userData = await userDetailsResponse.json();
+              userData = (await userDetailsResponse.json()) as UserRecord;
               userUid = userData._id;
             }
-            else if (userDoc) {
+            else if (userDoc !== null) {
               userData = userDoc;
-              userUid = userDoc._id;
+              userUid = userDoc._id.toString();
             }
             else {
               console.warn("Error fetching user details:", userDetailsResponse.statusText);
+              return res.status(401).json({
+                error:  userDetailsResponse.statusText,
+                success: false,
+              });
             }
           } catch (userDetailsError) {
             console.warn("Error fetching user details:", userDetailsError);
+            return res.status(401).json({
+                error:  userDetailsError,
+                success: false,
+              });
           }
       }
     } catch (apiError) {
       console.log("External API login failed:", apiError);
+      return res.status(401).json({
+        error: "External API login failed",
+        success: false,
+      });
+    }
+
+    if (!userData) {
+      return res.status(500).json({
+        success: false,
+        error: "User details unavailable",
+      });
     }
 
     if (!apiToken) {
@@ -101,7 +132,9 @@ router.post("/login", async (req, res) => {
     // --- Store login info in session ---
     if (req.session) {
       req.session.loginSource = loginSource;
-      req.session.userUid = userUid;
+      if (userUid) {
+        req.session.userUid = userUid;
+      }
     }
 
     console.log("User data is:",userData);
@@ -186,7 +219,7 @@ router.post("/create", async (req, res) => { //TODO: add authentication
     }
 
     const email_details = {
-      from: 'DIPS Consent Manager <dips-consent-manager@soton.ac.uk>',
+      from: email_sender,
       to: email,
       subject: 'Consent Request',
       html: '<p>Please click the link to consent:</p><p><a href="LINK">Consent</a></p><p>Or click the following link to reject:</p><p><a href="LINK">Reject</a></p>',
@@ -231,7 +264,7 @@ router.post("/create", async (req, res) => { //TODO: add authentication
       const fallback = "unknown";
 
       const registrationPayload = {
-        username_email: email,
+        email: email,
         username: email.includes("@") ? email.split("@")[0] : email,
         password: "Random_Password_For_Testing_13!",
         name: fallback,
@@ -260,16 +293,13 @@ router.post("/create", async (req, res) => { //TODO: add authentication
 
       apiRegistrationSuccess = apiResponse.ok;
       if (apiResponse.ok) {
-        const successData = await apiResponse.json();
+        const successData = (await apiResponse.json()) as UserRecord;
         userRecord = successData;
         console.log("User Management Service API registration successful:", successData);
 
         // Extract MongoDB user ID from the response
-        if (
-          successData &&
-          (successData.user_id || successData.id || successData._id)
-        ) {
-          uid = successData.user_id || successData.id || successData._id;
+        if (successData && (successData._id)) {
+          uid = successData._id;
           console.log("MongoDB user ID received:", uid);
         } else {
           console.warn("No user ID found in API response:", successData);
@@ -291,6 +321,13 @@ router.post("/create", async (req, res) => { //TODO: add authentication
         error: apiError.message,
         stack: apiError.stack,
         email: email,
+      });
+    }
+
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve new user record",
       });
     }
 
@@ -369,13 +406,10 @@ router.post("/update", async (req, res) => {
       });
     }
 
-    let apiToken: any = null;
     const formData = new URLSearchParams();
     formData.append("username", email);
     formData.append("password", password);
 
-    // Save user data to appropriate Firestore collection
-    const collection = role === "owner" ? "owners" : "requesters";
     const userData = {
       name,
       email,
@@ -396,7 +430,7 @@ router.post("/update", async (req, res) => {
 
       const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
 
-      console.log("Calling negotiation API registration...");
+      console.log("Calling User Management Service registration...");
       console.log("URL:", `${externalApiUrl}/user/update-password`);
       console.log("Email:", email);
       console.log("Type:", role === "requester" ? "consumer" : "provider");
@@ -409,7 +443,7 @@ router.post("/update", async (req, res) => {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            username_email: email,
+            email: email,
             password: new_password,
             name: name,
             type: role === "requester" ? "consumer" : "provider",
@@ -417,13 +451,13 @@ router.post("/update", async (req, res) => {
         }
       );
 
-      console.log("Negotiation API response status:", apiResponse.status);
+      console.log("User Management Service response status:", apiResponse.status);
 
       apiRegistrationSuccess = apiResponse.ok;
       if (apiResponse.ok) {
-        const successData = await apiResponse.json();
+        const successData = (await apiResponse.json()) as UserRecord;
         userRecord = successData;
-        console.log("Negotiation API password changed successfully:", successData);
+        console.log("Password changed successfully:", successData);
 
         // Extract MongoDB user ID from the response
       } else {
@@ -437,6 +471,7 @@ router.post("/update", async (req, res) => {
           role: role,
           type: role === "requester" ? "consumer" : "provider",
         });
+        return 
       }
     } catch (apiError: any) {
       console.error("External API registration exception:", {
@@ -447,12 +482,228 @@ router.post("/update", async (req, res) => {
       });
     }
 
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve user record",
+      });
+    }
+
     res.status(201).json({
       success: true,
       user: {
-        uid: userRecord.uid,
+        uid: userRecord._id,
         email: userRecord.email,
         role,
+        userData,
+        apiRegistrationSuccess,
+        mongoUserId,
+      },
+    });
+  } catch (error: any) {
+    console.error("Update error:", error);
+    res.status(400).json({
+      error: error.message || "Update failed",
+      success: false,
+    });
+  }
+});
+
+router.post("/change-password", async (req, res) => {
+  try {
+    console.log("========================================");
+    console.log("📝 UPDATE REQUEST RECEIVED");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("========================================");
+
+    const {
+      new_password,
+      confirm_password,
+      token
+    } = req.body;
+
+    if (!new_password) {
+      console.error("Missing required fields:", {
+        hasPassword: !!new_password,
+      });
+      return res.status(400).json({
+        error: "New password is required.",
+        success: false,
+      });
+    }
+
+    if (new_password !== confirm_password) {
+      console.error("New passwords do not match.");
+      return res.status(400).json({
+        error: 'New passwords do not match.',
+        success: false,
+      });
+    }
+
+    const { payload } = await jwtVerify(token, secret);
+    if (!payload) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+    const decoded_token = decodeJwt(token);
+    console.log("Decoded token payload is:");
+    console.log(decoded_token);
+
+    if (!decoded_token.email) {
+      return res.status(401).json({
+        error: "Email address missing",
+        success: false,
+      });
+    }
+    
+    const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Token verification failed",
+        success: false,
+      });
+    }
+
+    if (verification.action !== "change-password"){
+      return res.status(401).json({
+        error: "Token action mismatch.",
+        success: false,
+      });
+    }
+
+    if (verification.used) {
+      return res.status(401).json({
+        error: "Token already used",
+        success: false,
+      });
+    }
+
+    if (Date.now() > verification.expiresAt) {
+      const language = decoded_token.language ? decoded_token.language.toString() : "en";
+      const email = decoded_token.email;
+      const random_token = crypto.randomBytes(32).toString("hex");
+      const token_payload = {
+        email: email,
+        action: "change-password",
+        token: random_token,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+        used: false
+      }
+      const email_token = await new SignJWT(token_payload)
+        .setProtectedHeader({alg: "HS256"})
+        .sign(secret);
+
+      // Delete the expired token.
+      await db.collection("tokens").deleteOne({token: {$eq: decoded_token.token}});
+      // Insert the new token.
+      const insert_token = await db.collection("tokens").insertOne(token_payload);
+      
+      if (insert_token) {
+        const email_content = ExpiredChangePasswordEmail(email_token, language);
+
+        const email_details = {
+            from: email_sender,
+            to: email,
+            subject: 'Change Password',
+            html: email_content,
+          }
+        await sendTestEmail(email_details);
+
+        return res.status(401).json({
+          error: "Token is expired. A new email has been sent.",
+          success: false,
+        })
+      }
+
+      return res.status(401).json({
+        error: "Token is expired",
+        success: false,
+      });
+    }
+
+    const user_doc = await db.collection("users").findOne({email: decoded_token.email.toString()});
+    const email = decoded_token.email.toString();
+
+    if (!user_doc) {
+      return res.status(401).json({
+        error: "User not found.",
+        success: false,
+      });
+    }
+
+    const userData = {
+      _id: user_doc._id,
+      email: user_doc.email,
+      keycloak_sub: user_doc.keycloak_sub,
+      password: new_password,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // External API registration
+    let apiRegistrationSuccess = false;
+    let mongoUserId = null;
+    let userRecord = null;
+    try {
+      const externalApiUrl =
+        process.env.USER_MANAGEMENT_SERVICE_API_URL ||
+        "https://dips.soton.ac.uk/negotiation-api";
+      const masterPasswordParam = process.env.MASTER_PASSWORD || "master_password";
+      const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+
+      const apiResponse = await fetch(
+        `${externalApiUrl}/user/update-password?master_password_input=${encodedMasterPassword}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(userData),
+        }
+      );
+
+      console.log("User Management Service response status:", apiResponse.status);
+
+      apiRegistrationSuccess = apiResponse.ok;
+      if (apiResponse.ok) {
+        const successData = (await apiResponse.json()) as UserRecord;
+        userRecord = successData;
+        await db.collection("tokens").updateOne({token: {$eq: decoded_token.token}}, {$set: {used: true}});
+        console.log("Password changed successfully:", successData);
+        // Extract MongoDB user ID from the response
+      } else {
+        const errorData = await apiResponse.json();
+        console.error("External API registration failed:", {
+          status: apiResponse.status,
+          statusText: apiResponse.statusText,
+          error: errorData,
+          email: email,
+        });
+        return 
+      }
+    } catch (apiError: any) {
+      console.error("External API registration exception:", {
+        error: apiError.message,
+        stack: apiError.stack,
+        email: email,
+      });
+    }
+
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve user record",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      user: {
+        uid: userRecord._id,
+        email: userRecord.email,
         userData,
         apiRegistrationSuccess,
         mongoUserId,
@@ -534,7 +785,7 @@ router.post("/register", async (req, res) => {
       const fallback = "unknown";
  
       const registrationPayload = {
-        username_email: email,
+        email: email,
         username: email.includes("@") ? email.split("@")[0] : email,
         password: password,
         name: name,
@@ -563,7 +814,7 @@ router.post("/register", async (req, res) => {
 
       apiRegistrationSuccess = apiResponse.ok;
       if (apiResponse.ok) {
-        const successData = await apiResponse.json();
+        const successData = (await apiResponse.json()) as UserRecord;
         userRecord = successData;
         console.log("API registration successful:", successData);
 
@@ -585,10 +836,17 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve new user record",
+      });
+    }
+
     res.status(201).json({
       success: true,
       user: {
-        uid: userRecord.uid,
+        uid: userRecord._id,
         email: userRecord.email,
         role,
         userData,
@@ -605,7 +863,7 @@ router.post("/register", async (req, res) => {
 });
 
 // POST /api/auth/logout - User logout
-router.post("/logout", async (req, res) => {
+router.post("/logout", async (_req, res) => {
   try {
     // For server-side logout, we just return success
     // Client will handle clearing local storage
@@ -666,17 +924,17 @@ router.get("/user/:uid", async (req, res) => {
 });
 
 // GET /api/auth/owners - Get all owners
-router.get("/owners", async (req, res) => {
+router.get("/owners", async (_req, res) => {
   try {
     const ownersSnapshot = await db.collection("users").find({type: {$eq: "provider"}}).toArray();
     const owners: { id: string; email: string; name?: string }[] = [];
 
     ownersSnapshot.forEach((doc) => {
       const data = doc;
-      if (data.username_email) {
+      if (data.email) {
         owners.push({
           id: doc._id.toString(),
-          email: data.username_email,
+          email: data.email,
           name: data.name || "Unknown",
         });
       }
@@ -726,10 +984,6 @@ router.delete("/user/:email", async (req, res) => {
     }
 
     console.log("Deleting user:", email);
-
-    // First, get the user's UID from Firebase to delete from Firestore
-    let userRecord = null;
-    let userUid = null;
 
     // Delete from external API first (if it exists there)
     let externalApiDeleteSuccess = false;
@@ -804,9 +1058,9 @@ router.get("/verify/:token", async (req, res) => {
     console.log("Decoded token payload is:");
     console.log(decoded_token);
 
-    if (!decoded_token.email) {
+    if (!decoded_token.owner) {
       return res.status(401).json({
-        error: "Email address missing",
+        error: "Owner data missing",
         success: false,
       });
     }
@@ -817,7 +1071,8 @@ router.get("/verify/:token", async (req, res) => {
         success: false,
       });
     }
-    
+
+    const owner = decoded_token.owner as {email: string, name?: string, id?: string};
     const requestId = decoded_token.requestId;
     const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
 
@@ -836,16 +1091,57 @@ router.get("/verify/:token", async (req, res) => {
     }
 
     if (Date.now() > verification.expiresAt) {
-      //TODO: Renew token?
+      // Workflow to send another verification email if the token is expired.
+      const language = decoded_token.language ? decoded_token.language.toString() : "en";  
+      const random_token = crypto.randomBytes(32).toString("hex");
+      const token_payload = {
+        owner: owner,
+        requestId: requestId,
+        language: language,
+        action: "confirm",
+        token: random_token,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        used: false
+      }
+      const email_token = await new SignJWT(token_payload)
+        .setProtectedHeader({alg: "HS256"})
+        .sign(secret);
+
+      // Delete the expired token.
+      await db.collection("tokens").deleteOne({token: {$eq: decoded_token.token}});
+      // Insert the new token.
+      const insert_token = await db.collection("tokens").insertOne(token_payload);
+      const request_doc = await db.collection<RequestData>("requests").findOne({_id: new ObjectId(requestId.toString())});
+      
+      if (insert_token && request_doc) {
+        const email_content = ExpiredVerificationEmail(request_doc, email_token, language);
+
+        const email_details = {
+            from: email_sender,
+            to: owner.email,
+            subject: 'Change Password',
+            html: email_content,
+          }
+        await sendTestEmail(email_details);
+
+        return res.status(401).json({
+          error: "Token is expired. A new email has been sent.",
+          success: false,
+        })
+      }
+
       return res.status(401).json({
         error: "Token is expired",
         success: false,
       });
     }
 
+    const lang = verification.language || "en";
+
     console.log("Creating new user");
     try {
-      const email = decoded_token.email.toString();
+      const email = owner.email;
 
       let uid = null;
       let userRecord = null;
@@ -861,10 +1157,10 @@ router.get("/verify/:token", async (req, res) => {
         const randomPassword = "Random_Password_For_Testing_13!";
 
         const registrationPayload = {
-          username_email: email,
+          email: email,
           username: email.includes("@") ? email.split("@")[0] : email,
           password: randomPassword, // Ideally this should be null so we can create users who can only login through an email link.
-          name: `${fallback} ${fallback}`, // The user management service takes this value and splits it into first name and last name. We should model it otherwise.
+          name: owner.name || `${fallback} ${fallback}`, // The user management service takes this value and splits it into first name and last name. We should model it otherwise.
           type: "provider",
         
           incorporation: decoded_token.incorporation || fallback,
@@ -889,16 +1185,20 @@ router.get("/verify/:token", async (req, res) => {
         console.log("API response status:", apiResponse.status);
 
         if (apiResponse.ok) {
-          const successData = await apiResponse.json();
+          const successData = (await apiResponse.json()) as UserRecord;
           userRecord = successData;
           console.log("User Management Service API registration successful:", successData);
 
           // Extract MongoDB user ID from the response
-          if (successData && (successData.user_id || successData.id || successData._id)) {
-            uid = successData.user_id || successData.id || successData._id;
+          if (successData && (successData._id)) {
+            uid = successData._id;
             console.log("MongoDB user ID received:", uid);
           } else {
             console.warn("No user ID found in API response:", successData);
+            return res.status(500).json({
+              success: false,
+              error: "No user ID found in API response.",
+            })
           }
 
           await db.collection("tokens").updateOne({token: {$eq: decoded_token.token}}, {$set: {used: true}}); //Mark the token as used.
@@ -922,9 +1222,44 @@ router.get("/verify/:token", async (req, res) => {
           const redirect_url = process.env.FRONTEND_URL || "https://dips.soton.ac.uk/consent-manager"
 
 
-          const userData = {uid: userRecord._id, role: "owner", email: userRecord.username_email, ...userRecord};
+          const userData = {
+            uid: userRecord._id, 
+            role: "owner", 
+            email: userRecord.email,
+            displayName: userRecord.name,
+            userData: {...userRecord}};
           const encodedUser = encodeURIComponent(JSON.stringify(userData));
           const encodedToken = encodeURIComponent(access_token);
+
+          console.log(`Attempting to send email to ${email}`);
+          const random_token = crypto.randomBytes(32).toString("hex");
+          const token_payload = {
+            email: email,
+            action: "change-password",
+            token: random_token,
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+            used: false
+          }
+          const email_token = await new SignJWT(token_payload)
+            .setProtectedHeader({alg: "HS256"})
+            .sign(secret);
+
+          const insert_token = await db.collection("tokens").insertOne(token_payload);
+          
+          if (insert_token) {
+            const email_content = ChangePasswordEmail(email_token, lang);
+
+            const email_details = {
+                from: email_sender,
+                to: email,
+                subject: 'Change Password',
+                html: email_content,
+              }
+            const email_result = await sendTestEmail(email_details);
+
+            console.log(email_result.success);
+          }
 
           req.session.userUid = uid;
           res.redirect(
@@ -970,6 +1305,119 @@ router.get("/verify/:token", async (req, res) => {
   }
 }
 );
+
+router.get("/decode/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { payload } = await jwtVerify(token, secret);
+    if (!payload) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+    const decoded_token = decodeJwt(token);
+    console.log("Decoded token payload is:");
+    console.log(decoded_token);
+
+    if (!decoded_token.email) {
+      return res.status(401).json({
+        error: "Email address missing",
+        success: false,
+      });
+    }
+    
+    const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Token verification failed",
+        success: false,
+      });
+    }
+
+    if (verification.used) {
+      return res.status(401).json({
+        error: "Token already used",
+        success: false,
+      });
+    }
+
+    if (Date.now() > verification.expiresAt) {
+      //TODO: Renew token?
+      return res.status(401).json({
+        error: "Token is expired",
+        success: false,
+      });
+    }
+
+    res.json({...decoded_token, success: true})
+  }
+  catch(error: any) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Token verification failed",
+    })
+  }
+}
+);
+
+router.post("/forgot-password", async (req, res) => {
+  try {
+    if (!req.body.email) {
+      return res.status(401).json({
+        error: "Email address is required.",
+        success: false,
+      });
+    }
+
+    const lang = req.body.language || "en";
+
+    const email = req.body.email;
+
+    console.log(`Attempting to send email to ${email}`);
+    const random_token = crypto.randomBytes(32).toString("hex");
+    const token_payload = {
+      email: email,
+      action: "change-password",
+      token: random_token,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+      used: false
+    }
+    const email_token = await new SignJWT(token_payload)
+      .setProtectedHeader({alg: "HS256"})
+      .sign(secret);
+
+    const insert_token = await db.collection("tokens").insertOne(token_payload);
+    
+    if (insert_token) {
+      const email_content = ChangePasswordEmail(email_token, lang);
+
+      const email_details = {
+          from: email_sender,
+          to: email,
+          subject: 'Change Password',
+          html: email_content,
+        }
+      const email_result = await sendTestEmail(email_details);
+
+      console.log(email_result.success);
+      // Should respond successfully even if user doesn't exist.
+      res.json({
+        success: true,
+        message: "Email sent successfully!",
+      });
+    }
+  }
+  catch (error) {
+    console.error("Error sending email to reset password:", error);
+    res.status(500).json({
+      error: "Failed to send email to reset password.",
+      success: false,
+    })
+  }
+});
 
 // GET /api/auth/token/:token - Authenticate with external API token and redirect
 // TODO: Test this

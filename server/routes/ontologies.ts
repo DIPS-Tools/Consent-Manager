@@ -10,6 +10,7 @@ const router = express.Router();
 const getFileSizeLimit = () => {
   const limit = process.env.FILE_UPLOAD_LIMIT || '10mb';
   // Convert string like "100mb" to bytes
+  console.log("File limit is: ",limit);
   const match = limit.match(/^(\d+)(mb|gb|kb)?$/i);
   if (!match) return 10 * 1024 * 1024; // Default 10MB
   
@@ -29,7 +30,7 @@ const upload = multer({
   limits: {
     fileSize: getFileSizeLimit(),
   },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     // Accept ontology files (common formats)
     const allowedTypes = ['.ttl', '.rdf', '.owl', '.n3', '.jsonld', '.xml', '.json'];
     const fileExtension = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
@@ -174,23 +175,21 @@ router.get('/', async (req, res) => {
       const userOntologiesQuery = db.collection('ontologies').find({'uploadedBy': {$eq: requesterUid}});
       
       // Get the default ontology by ID
-      const defaultOntologyDoc = await db.collection('ontologies').findOne({'default': {$eq: true}});
+      const defaultOntologyDocs = await db.collection('ontologies').find({'isDefault': {$eq: true}}).toArray();
       
       const userOntologies = await userOntologiesQuery.toArray();
       
       // Add default ontology if it exists
-      const allAvailableOntologies = [...userOntologies];
-      if (defaultOntologyDoc) {
-        allAvailableOntologies.push({
-          id: defaultOntologyDoc.id,
-          ...defaultOntologyDoc.data()
-        });
+      let allAvailableOntologies = [...userOntologies];
+
+      console.log(`Default ontologies: ${defaultOntologyDocs}`)
+      if (defaultOntologyDocs) {
+        allAvailableOntologies = allAvailableOntologies.concat(defaultOntologyDocs);
       }
 
       allAvailableOntologies.forEach(async value => {
         console.log(value);
-      }
-      )
+      })
       
       res.json({
         success: true,
@@ -198,7 +197,7 @@ router.get('/', async (req, res) => {
       });
     } else {
       // No user specified - return all ontologies
-      const ontologies = await db.collection('ontologies').find().toArray();
+      const ontologies = await db.collection('ontologies').find({'isDefault': {$eq: true}}).toArray();
 
       res.json({
         success: true,
@@ -250,6 +249,7 @@ router.delete('/:id', async (req, res) => {
       return;
     }
 
+    //@ts-ignore
     const requesterRef = await db.collection('users').findOneAndUpdate({_id: new ObjectId(requesterUid)}, {$pull: {ontologyIds: new ObjectId(id)}});
 
     res.json({

@@ -9,7 +9,6 @@ const API_BASE_URL =
 
 console.log("typeof window:", typeof window);
 console.log("import.meta.env:", import.meta.env);
-console.log("process.env.VITE_API_BASE_URL:", process.env.VITE_API_BASE_URL);
 
 //const API_BASE_URL =
   //import.meta.env.VITE_API_BASE_URL || "http://10.22.38.111:8019/api";
@@ -538,6 +537,31 @@ export const deleteRequest = async (id: string) => {
   }
 };
 
+export const revokeRequest = async (id: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/requests/${id}/reject`, {
+      method: "POST",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
+
+    const api_response = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return api_response;
+  } catch (error) {
+    console.error("Error deleting request:", error);
+    throw error;
+  }
+};
+
 // External API integration for negotiation
 export const createNegotiationFromRequest = async (
   requestId: string,
@@ -711,7 +735,7 @@ export const redirectToNegotiationDisplay = async (
 
   // Build URL with authentication parameters
   const negotiationBaseUrl =
-    import.meta.env.VITE_NEGOTIATION_BASE_URL ||
+    import.meta.env.VITE_NEGOTIATION_FRONTEND_URL ||
     "https://dips.soton.ac.uk/negotiation/organization/negotiation";
   const negotiationUrl =
     `${negotiationBaseUrl}?` +
@@ -734,6 +758,85 @@ export const redirectToNegotiationDisplay = async (
     throw new Error("New tab blocked");
   }
 };
+
+export async function forgotPassword(email: string) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: email}),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to send email to reset password.");
+    }
+
+    return data;
+  }
+  catch (error) {
+    console.error("Error changing password:", error);
+    throw error;
+  }
+}
+
+export async function changePassword(password: string, token: string) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        new_password: password,
+        confirm_password: password,
+        token: token}),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to change password.");
+    }
+
+    return data;
+  }
+  catch (error) {
+    console.error("Error changing password:", error);
+    throw error;
+  }
+}
+
+export async function decodeToken(token: string) {
+  try {
+    console.log("Token received:", token);
+
+    const response = await fetch(
+      `${API_BASE_URL}/auth/${token}/createContract`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to create contract");
+    }
+
+    return data;
+  } catch (error) {
+    console.error("❌ Error creating contract:", error);
+    throw error;
+  }
+}
 
 export async function createContractAPI(request: ContractRequest) {
   try {

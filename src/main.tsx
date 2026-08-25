@@ -41,8 +41,11 @@ import UserDetails from "./API/UserDetails";
 // Context
 import { AuthProvider } from "./AuthContext";
 import { IframeProvider } from "./IframeContext";
+import "./i18n";
 
 import AllUsers from "./API/AllUsers";
+import ChangePassword from "./components/Login/ChangePassword";
+import ForgotPassword from "./components/Login/ForgotPassword";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -61,6 +64,8 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/allUsers" element={<AllUsers />} />
             <Route path="/userDetails" element={<UserDetails />} />
             <Route path="/emailLogin" element={<EmailLogin />} />
+            <Route path="/changePassword" element={<ChangePassword/>} />
+            <Route path="/forgotPassword" element={<ForgotPassword/>} />
 
             {/* owner */}
             <Route

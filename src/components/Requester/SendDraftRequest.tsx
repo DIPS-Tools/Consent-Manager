@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getRequest, getAllOwners, sendRequest } from "../../services/api";
 import styles from "../../css/Ontology.module.css";
+import { useTranslation } from "react-i18next";
 
 function SendDraftRequest() {
   const { requestId } = useParams();
@@ -21,6 +22,7 @@ function SendDraftRequest() {
     { email: string; id: string; name?: string }[]
   >([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const { t } = useTranslation();
 
   const now = new Date();
   const days = [
@@ -218,9 +220,13 @@ const validateEmail = (email: string) => {
       setShowDropdown(false);
     }
     else{
-      alert("Please input a valid email address.");
+      alert(t("invalid_email_warning"));
       return;
     }
+  };
+
+  const handleRenameOwner = (value: string, email: string) => {
+    setSelectedOwners(selectedOwners.map((owner) => owner.email === email ? {...owner, name: value} : owner));
   };
 
   const removeOwner = (email: string) => {
@@ -229,12 +235,12 @@ const validateEmail = (email: string) => {
 
   const handleSendRequest = async () => {
     if (selectedOwners.length === 0) {
-      alert("Please add at least one valid owner.");
+      alert(t("send_request_warning_1"));
       return;
     }
 
     if (!requestId) {
-      alert("Request ID is missing.");
+      alert(t("request_id_missing"));
       return;
     }
 
@@ -242,7 +248,7 @@ const validateEmail = (email: string) => {
 
     try {
       const newOwnerIds = selectedOwners.filter((o) => o.id != "").map((o) => o.id);
-      const unregisteredOwners = selectedOwners.filter((o) => o.id === "").map((o) => o.email);
+      const unregisteredOwners = selectedOwners.filter((o) => o.id === "").map((o) => ({name: o.name || "Unknown", email: o.email}));
 
       console.log("=== BEFORE SENDING ===");
       console.log("Current owners state:", owners);
@@ -278,7 +284,8 @@ const validateEmail = (email: string) => {
       const updatePayload = {
         owners: allOwnerIds,
         ownersPending: allPendingIds,
-        user_emails: unregisteredOwners,
+        user_details: unregisteredOwners,
+        language: localStorage.getItem("language") || "en",
         status: "sent",
         sentAt: `${days[now.getDay()]} ${now
           .getDate()
@@ -303,7 +310,7 @@ const validateEmail = (email: string) => {
       console.log("====================");
 
       if (result.success) {
-        alert("Request sent successfully!");
+        alert(t("request_sent_successfully"));
         // Clear selected owners after sending
         setSelectedOwners([]);
 
@@ -326,7 +333,7 @@ const validateEmail = (email: string) => {
         
         console.log("======================");
       } else {
-        alert("Error sending request. Please try again.");
+        alert(t("error_sending_request"));
       }
     } catch (error) {
       console.error("Error sending request:", error);
@@ -348,20 +355,20 @@ const validateEmail = (email: string) => {
         <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
       </Link>
 
-      <h3 className="mt-4">Send Request</h3>
-      <p>Submit requests to data owners for review and action.</p>
+      <h3 className="mt-4">{t("send_request")}</h3>
+      <p>{t("send_request_desc")}</p>
       <hr />
 
       {/* Show already sent requests */}
       {sentOwners.length > 0 && (
         <div className="mb-4">
-          <h5>Already sent to</h5>
+          <h5>{t("already_sent_to")}</h5>
           <table className="table table-bordered table-sm">
             <thead>
               <tr>
-                <th className="px-2">Name</th>
-                <th className="px-2">Email</th>
-                <th className="px-2">Status</th>
+                <th className="px-2">{t("name")}</th>
+                <th className="px-2">{t("email")}</th>
+                <th className="px-2">{t("status")}</th>
               </tr>
             </thead>
             <tbody>
@@ -371,14 +378,14 @@ const validateEmail = (email: string) => {
                   <td className="px-2">{owner.email}</td>
                   <td className="px-2">
                     {owner.status === "Accepted" && (
-                      <span className="badge bg-success">Accepted</span>
+                      <span className="badge bg-success">{t("accepted")}</span>
                     )}
                     {owner.status === "Rejected" && (
-                      <span className="badge bg-danger">Rejected</span>
+                      <span className="badge bg-danger">{t("rejected")}</span>
                     )}
                     {owner.status === "Pending" && (
                       <span className="badge bg-warning text-dark">
-                        Pending
+                        {t("pending")}
                       </span>
                     )}
                   </td>
@@ -392,7 +399,7 @@ const validateEmail = (email: string) => {
       <form className="w-50" onSubmit={(e) => e.preventDefault()}>
         <div className="mb-3">
           <label className={`${styles.formLabel} form-label`}>
-            Add New Recipients
+            {t("add_new_recipients")}
           </label>
           <div className="position-relative w-75" style={{display: "inline-block"}}>
             <input
@@ -403,7 +410,7 @@ const validateEmail = (email: string) => {
               onFocus={() =>
                 emailInput && setShowDropdown(filteredOwners.length > 0)
               }
-              placeholder="Type name or email to search..."
+              placeholder={t("type_name_email_to_search")}
             />
 
             {/* Dropdown for autocomplete */}
@@ -425,7 +432,7 @@ const validateEmail = (email: string) => {
                       (e.currentTarget.style.backgroundColor = "white")
                     }
                   >
-                    <strong>{owner.name || "Unknown"}</strong> &lt;{owner.email}
+                    <strong>{owner.name || t("unknown")}</strong> &lt;{owner.email}
                     &gt;
                   </div>
                 ))}
@@ -446,21 +453,29 @@ const validateEmail = (email: string) => {
             <div className="mt-3">
               <p className="mb-2">
                 <strong>
-                  New Recipients to Add ({selectedOwners.length}):
+                  {t("new_recipients_to_add")} ({selectedOwners.length}):
                 </strong>
               </p>
               <table className="table table-bordered table-sm">
                 <thead>
                   <tr>
-                    <th className="px-2">Name</th>
-                    <th className="px-2">Email</th>
-                    <th className="px-2">Remove</th>
+                    <th className="px-2">{t("name")}</th>
+                    <th className="px-2">{t("email")}</th>
+                    <th className="px-2">{t("remove")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {selectedOwners.map((owner) => (
                     <tr key={owner.email}>
-                      <td className="px-2">{owner.name || "Unknown"}</td>
+                      <td className="px-2">{ 
+                        <input
+                          type="text"
+                          value={owner.name}
+                          disabled={!!owner.id} 
+                          className={`${styles.formInput} form-control`}
+                          onChange={(e) => handleRenameOwner(e.target.value, owner.email)}
+                          placeholder={t("unknown")}
+                        />}</td>
                       <td className="px-2">{owner.email}</td>
                       <td className="text-center">
                         <button
@@ -481,21 +496,17 @@ const validateEmail = (email: string) => {
       </form>
 
       <div className="alert alert-warning" role="alert">
-        <strong>Note:</strong> If you search for someone and they don't appear,
-        it means you've already sent this request to them.
+        <strong>{t("note")}:</strong> {t("sending_a_request_alert")}
       </div>
 
-      <h5 className="mt-4">Sending a request</h5>
+      <h5 className="mt-4">{t("sending_a_request")}</h5>
       <p>
-        The recipient's email is required. If they don't have an account in the
-        system, they will be notified by email. However, they must create an
-        account to view your request and take action.
+        {t("sending_a_request_msg")}
       </p>
 
-      <h5 className="mt-4">What happens next?</h5>
+      <h5 className="mt-4">{t("what_happens_next")}</h5>
       <p>
-        Once the request is sent, the recipient will be notified. Please note
-        that it may take some time for them to get back to you with a decision.
+        {t("what_happens_next_desc")}
       </p>
 
       <div className="mt-4">
@@ -504,7 +515,7 @@ const validateEmail = (email: string) => {
           onClick={handleSendRequest}
           disabled={loading || selectedOwners.length === 0}
         >
-          {loading ? "Sending..." : `Send Request`}
+          {loading ? `${t("sending")}...` : t("send_request")}
         </button>
       </div>
     </div>

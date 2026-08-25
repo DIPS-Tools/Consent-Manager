@@ -1,10 +1,12 @@
 // libraries
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
 // components
 // import logo from "../../assets/logo.png";
 
 function Navbar() {
+  const { t } = useTranslation();
   return (
     <>
       <nav className="navbar navbar-expand-lg bg-body-tertiary">
@@ -23,7 +25,7 @@ function Navbar() {
               height="24"
               className="d-inline-block align-text-top me-2"
             /> */}
-            DIPS Consent Manager
+            {t("appName")}
           </Link>
           <button
             className="navbar-toggler"
@@ -40,17 +42,17 @@ function Navbar() {
             <ul className="navbar-nav me-auto mb-2 mb-lg-0">
               <li className="nav-item">
                 <a className="nav-link" href="#">
-                  About
+                  {t("about")}
                 </a>
               </li>
-              <li className="nav-item">
+              {/* <li className="nav-item">
                 <a className="nav-link" href="#">
-                  Who is it for
+                  {t("who_is_it_for")}
                 </a>
-              </li>
+              </li> */}
               <li className="nav-item">
                 <a className="nav-link" href="#">
-                  Contact
+                  {t("contact")}
                 </a>
               </li>
             </ul>
@@ -58,7 +60,7 @@ function Navbar() {
             <ul className="navbar-nav mb-2 mb-lg-0">
               <li className="nav-item">
                 <Link className="nav-link" to="/login">
-                  Sign in
+                  {t("login")}
                 </Link>
               </li>
             </ul>

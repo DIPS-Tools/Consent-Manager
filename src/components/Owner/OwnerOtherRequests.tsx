@@ -5,9 +5,10 @@ import { getRequests } from "../../services/api";
 
 // css
 import styles from "../../css/Ontology.module.css";
+import { useTranslation } from "react-i18next";
 
 interface Request {
-  id: string;
+  _id: string;
   requestName: string;
   status: string;
   sentAt: string;
@@ -19,6 +20,7 @@ function OwnerOtherRequests() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
   const { user } = useAuth();
+  const { t } = useTranslation();
 
   useEffect(() => {
     const fetchRequests = async () => {
@@ -65,43 +67,43 @@ function OwnerOtherRequests() {
         to="/ownerBase/ownerDashboard"
         role="button"
       >
-        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
       </Link>
 
-      <h3 className="mt-4">Other Requests</h3>
-      <p>View details of the requests under negotiation or rejected.</p>
+      <h3 className="mt-4">{t("other_requests")}</h3>
+      <p>{t("other_requests_details")}</p>
       <hr />
 
       {loading ? (
-        <div className="text-center mt-5">Loading...</div>
+        <div className="text-center mt-5">${t("loading")}...</div>
       ) : error ? (
         <div className="text-danger text-center mt-5">{error}</div>
       ) : requests.length === 0 ? (
         <div className="text-center mt-5">
-          <h4>No negotiation or rejected requests</h4>
+          <h4>{t("no_other_requests")}</h4>
           <p className="mt-2">
-            Requests under negotiation or rejected will appear here.
+            {t("no_other_requests_text_1")}
           </p>
         </div>
       ) : (
         <table className="table">
           <thead>
             <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Date received</th>
-              <th scope="col">Actions</th>
+              <th scope="col">{t("name")}</th>
+              <th scope="col">{t("date_received")}</th>
+              <th scope="col">{t("actions")}</th>
             </tr>
           </thead>
           <tbody>
             {requests.map((request) => (
-              <tr key={request.id}>
+              <tr key={request._id}>
                 <td className="py-3">
                   {request.negotiationId ? (
                     <span className="badge bg-warning text-dark mb-2">
-                      Under Negotiation
+                      {t("under_negotiation")}
                     </span>
                   ) : (
-                    <span className="badge bg-danger mb-2">Rejected</span>
+                    <span className="badge bg-danger mb-2">{t("rejected")}</span>
                   )}
                   <br />
                   {request.requestName}
@@ -109,10 +111,10 @@ function OwnerOtherRequests() {
                 <td className="py-3">{request.sentAt}</td>
                 <td className="py-3">
                   <Link
-                    to={`/ownerBase/ownerOtherRequestsDetails/${request.id}`}
+                    to={`/ownerBase/ownerOtherRequestsDetails/${request._id}`}
                     className={`${styles.primaryButton} btn`}
                   >
-                    View Details
+                    {t("view_details")}
                   </Link>
                 </td>
               </tr>

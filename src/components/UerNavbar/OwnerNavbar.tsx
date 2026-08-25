@@ -4,6 +4,8 @@ import styles from "../../css/Navbar.module.css";
 // libraries
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../AuthContext"; // Use AuthContext
+import { changeLanguage } from "../../utils/language";
+import { useTranslation } from "react-i18next";
 
 // components
 // import logo from "../../assets/logo.png";
@@ -11,6 +13,7 @@ import { useAuth } from "../../AuthContext"; // Use AuthContext
 const OwnerNavbar: React.FC = () => {
   const navigate = useNavigate();
   const { logout, userData, user } = useAuth();
+  const { t, i18n } = useTranslation();
 
   const handleLogout = async () => {
     logout();
@@ -33,7 +36,7 @@ const OwnerNavbar: React.FC = () => {
               height="24"
               className="d-inline-block align-text-top me-2"
             /> */}
-            DIPS Consent Manager
+            {t("appName")}
           </Link>
           <button
             className="navbar-toggler"
@@ -68,15 +71,35 @@ const OwnerNavbar: React.FC = () => {
                       className="dropdown-item"
                       to={`/ownerBase/ownerProfile/${user?.uid}`}
                     >
-                      My Profile
+                      {t("profile")}
                     </Link>
                   </li>
                   <li>
                     <hr className="dropdown-divider" />
                   </li>
+                  <li className="px-3 py-2">
+                    <label htmlFor="languageSelect" className="form-label mb-1">
+                      {t("language")}
+                    </label>
+
+                    <select
+                      id="languageSelect"
+                      className="form-select form-select-sm"
+                      value={i18n.resolvedLanguage || i18n.language}
+                      onChange={(e) => changeLanguage(e.target.value)}
+                    >
+                      <option value="en">English</option>
+                      <option value="es">Español</option>
+                      <option value="el">Ελληνικά</option>
+                    </select>
+                  </li>
+
+                  <li>
+                    <hr className="dropdown-divider" />
+                  </li>
                   <li>
                     <button className="dropdown-item" onClick={handleLogout}>
-                      Sign out
+                     {t("logout")}
                     </button>
                   </li>
                 </ul>
