@@ -21,6 +21,13 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Show runner OS and Docker kernel
+        run: |
+          cat /etc/os-release
+          uname -a
+          docker info --format 'Docker kernel: {{.KernelVersion}}; OS: {{.OperatingSystem}}; architecture: {{.Architecture}}'
+          docker compose version
+
       - name: Check out CI scripts
         uses: actions/checkout@v7.0.1
         with:
