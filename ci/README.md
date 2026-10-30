@@ -40,8 +40,13 @@ starts empty; no business data is seeded.
 
 1. Review and commit this branch, `consent-manager-environment-setup`.
 2. In the Consent-Manager GitHub repository, open **Settings → Secrets and
-   variables → Actions** and add `CI_REPO_READ_TOKEN`. Use a fine-grained token
-   with **Contents: read** on the four repositories in `dependencies.json`.
+   variables → Actions** and add `CI_REPO_READ_TOKEN`. Dependencies span two
+   organizations, so one fine-grained token cannot read private repositories in
+   both. The current single-secret design can use a classic token with `repo`
+   scope if both organizations permit it; this permission is broader than
+   read-only. Alternatively, adapt the checkout steps to use two fine-grained
+   tokens with **Contents: read**, one per organization. See the
+   [detailed authentication steps](../docs/build_github_action_workflow.md#5-github-authentication-name-and-secret).
    Organization approval/SSO authorization may be required. Never paste the
    token into a script, workflow file, commit or chat.
 3. Push this branch. Its push trigger starts **Consent-Manager environment

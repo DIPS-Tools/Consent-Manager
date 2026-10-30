@@ -1,34 +1,38 @@
-# Building the Consent-Manager GitHub Actions workflow
+# Consent-Manager GitHub Actions Environment Setup and Readiness Testing
 
-Recorded: 29 October 2026  
 Implementation branch: `consent-manager-environment-setup`  
 Workflow: **Consent-Manager environment startup**
 
 ## 1. Purpose and current status
 
-Paolo requested a GitHub Actions workflow that recreates the Consent-Manager
-environment, starts its dependencies, and eventually runs Jaime's automated tests.
-Jaime confirmed that his tests are still being developed, so the work is divided
-into two stages:
+This document describes the configuration, execution, validation and operation of
+the Consent-Manager environment setup workflow. The workflow recreates the
+application environment on a GitHub-hosted runner and verifies service readiness.
+The scope is divided into two stages:
 
 1. **Environment setup:** check out the repositories, generate CI configuration,
    start Keycloak and the application services, check readiness, collect logs,
    and remove the temporary environment.
-2. **Application testing:** install and run Jaime's tests after the environment
+2. **Application testing:** install and run automated feature tests after the environment
    is ready, prepare the users/data they require, and publish test reports.
 
 CI means **Continuous Integration**. In this project, GitHub runs the setup on a
 temporary Ubuntu machine in response to a configured event. It does not connect
 to or deploy onto the developer's existing Docker environment.
 
-**Current status: the implementation exists, but a successful full environment
-startup has not yet been demonstrated.** Local configuration checks passed. The
-reported GitHub run reached Keycloak readiness, then MongoDB exited with code 1,
-preventing the dependent application services from starting. The MongoDB container
-log is still needed to establish the cause. See section 12.
+**Validation status: a successful GitHub Actions environment run has been reported.**
+The run completed without errors in **5 minutes 26 seconds** using Ubuntu 22.04.5
+LTS, kernel `6.8.0-1070-azure`, and Docker Compose `v2.38.2`. This is an observed
+run duration, not a performance guarantee. The application feature-test suite has
+not yet been integrated.
 
-A passing environment check will establish service readiness; it will not establish
-that login, consent creation, contract operations, or Jaime's tests pass.
+An earlier MongoDB startup failure on the Ubuntu 24.04 runner was resolved for
+the successful run by selecting `ubuntu-22.04`. Section 12 records the diagnosis
+and the runner compatibility considerations.
+
+A passing environment check establishes service readiness within the checks
+implemented here. Login, consent creation and contract operations require
+separate application tests.
 
 ## 2. Existing local development layout
 
@@ -54,8 +58,8 @@ The workflow preserves this relative directory structure on the GitHub runner.
 It uses the **parent** `dips-local-dev/docker-compose.yml` for the application
 stack, not the separate Compose files inside Consent-Manager.
 
-The local parent `.env` was inspected for variable names during implementation.
-Its credential values are not copied into GitHub or included in this note.
+The CI configuration follows the variable names required by the parent Compose
+file. Local `.env` credential values are not copied into the runner configuration.
 
 ## 3. Files added for the workflow
 
@@ -124,11 +128,11 @@ The current workflow expects this repository secret:
 The Secret is not your GitHub password, the token's descriptive name, or the
 contents of the local `.env` file.
 
-### Correction to the initial token recommendation
+### Token scope across organizations
 
 One fine-grained personal access token cannot access private repositories owned
-by both organizations. The initial suggestion to select all four repositories
-under one fine-grained token was therefore incomplete.
+by both organizations. Authentication must account for the separate repository
+owners.
 
 There are two approaches:
 
@@ -165,13 +169,52 @@ The current workflow explicitly requires this secret even if some dependencies
 are public. Supporting an entirely public setup without a token would require
 adjusting that check.
 
-## 6. Workflow configuration and checkout order
+## 6. GitHub Actions execution model and repository access
+
+### Trigger and runner lifecycle
+
+A workflow is the YAML definition stored in
+`.github/workflows/environment-check.yml`. It specifies the events that start
+a run, the runner to use, and the ordered job steps. A runner is the machine
+that executes those steps.
+
+For the configured push trigger, execution follows this sequence:
+
+```text
+Commit changes locally
+        ↓
+Push to consent-manager-environment-setup on GitHub
+        ↓
+GitHub starts the workflow job on a temporary Ubuntu 22.04 VM
+        ↓
+Print runner OS/kernel and check out the required repositories
+        ↓
+Generate CI configuration and validate the two Compose projects
+        ↓
+Build/start Keycloak, Consent-Manager and their dependencies
+        ↓
+Check service readiness
+        ↓
+Collect logs, upload artifacts and remove the temporary containers/volumes
+```
+
+A local `git commit` does not trigger GitHub Actions. The commit must be pushed
+to a branch matched by the workflow. The manual trigger is an additional entry
+point, subject to the default-branch requirement described below.
+
+The VM contains a fresh job workspace identified by `$GITHUB_WORKSPACE`.
+GitHub does not read the developer's `/opt/DataPACT/...` directory or use the
+developer's running containers. Source files must be available in the repositories
+and revisions selected by the workflow. The VM is temporary; this workflow does
+not publish a persistent application endpoint for users to visit after the run.
+
+### Runner configuration
 
 The workflow currently has these settings:
 
 | Setting | Current value |
 | --- | --- |
-| Runner | `ubuntu-24.04`, GitHub-hosted |
+| Runner | `ubuntu-22.04`, GitHub-hosted |
 | Job timeout | 60 minutes |
 | Push trigger | `consent-manager-environment-setup` branch only |
 | Manual trigger | `workflow_dispatch` |
@@ -181,17 +224,53 @@ The workflow currently has these settings:
 | Artifact action | `actions/upload-artifact@v7.0.2` |
 | Artifact retention | 7 days |
 
+The job selects the runner using:
+
+```yaml
+jobs:
+  environment:
+    name: Build and check environment
+    runs-on: ubuntu-22.04
+```
+
+The first step, **Show runner OS and Docker kernel**, records the operating-system
+release, host kernel, Docker kernel and Compose version. The Ubuntu release label
+does not pin a particular kernel version. Retain these diagnostics when updating
+the runner image or investigating a container startup failure.
+
+### How Compose files and Dockerfiles reach the VM
+
+The workflow uses `actions/checkout` to download repositories into the runner's
+workspace. It checks out the parent environment repository at the manifest SHA,
+then places each application repository at the nested path expected by Compose.
+The repository token authorizes access to the private dependency repositories.
+
+Checking out `DIPS-Tools/dips-local-dev` provides both
+`docker-compose.yml` and the `keycloak/` directory, including its Compose file,
+Dockerfile and exported realm. Keycloak is therefore supplied by the parent
+checkout; it is not downloaded from the developer's local machine.
+
 The runner assembles this layout:
 
 ```text
 $GITHUB_WORKSPACE/
 ├── consent-manager-ci/          workflow revision, used to run CI helpers
 └── dips-local-dev/              pinned parent repository
+    ├── docker-compose.yml
     ├── Consent-Manager/         workflow revision, used as application source
+    │   ├── Dockerfile.frontend
+    │   └── Dockerfile.backend
     ├── User-Management/         pinned dependency
+    │   └── Dockerfile
     ├── Contract_Service/        pinned dependency
+    │   └── Dockerfile
     ├── Negotiation-Tool/        pinned dependency
+    │   └── Dockerfile.api
     ├── keycloak/                supplied by the parent checkout
+    │   ├── docker-compose.yml
+    │   ├── Dockerfile
+    │   └── keycloak-dips-services-export/
+    │       └── dips_services-realm.json
     └── .cm-ci/                  generated state and configuration
 ```
 
@@ -201,6 +280,47 @@ relative path expected by Compose.
 
 The parent is checked out **before** the nested repositories. Checking out and
 cleaning the parent afterwards could remove the nested checkouts.
+
+### How Docker Compose uses the checked-out files
+
+A Compose file defines services, build contexts, images, ports, volumes,
+environment variables and dependencies. A Dockerfile defines how to build an
+individual container image. Compose uses the build paths to find the Dockerfiles
+inside the downloaded repositories.
+
+For example, the parent Compose configuration specifies:
+
+```yaml
+consent-manager-api:
+  build:
+    context: ./Consent-Manager
+    dockerfile: Dockerfile.backend
+```
+
+The selected project directory is `$GITHUB_WORKSPACE/dips-local-dev`, so the
+build context resolves to its `Consent-Manager/` directory. Docker reads
+`Consent-Manager/Dockerfile.backend` and builds the API image from that context.
+For the Keycloak Compose project, the project directory is
+`$GITHUB_WORKSPACE/dips-local-dev/keycloak`; its `context: .` selects that
+directory and its Dockerfile.
+
+Services defined with an `image:` setting, such as MongoDB, use a registry image
+instead of a Dockerfile from an application checkout. Docker pulls the image
+when needed.
+
+The helper script selects the files explicitly for each project:
+
+| Project | Base Compose file | Generated CI override |
+| --- | --- | --- |
+| Application | `dips-local-dev/docker-compose.yml` | `.cm-ci/application.override.json` |
+| Keycloak | `dips-local-dev/keycloak/docker-compose.yml` | `.cm-ci/keycloak.override.json` |
+
+Both commands also select `.cm-ci/environment.env` and a generated project name.
+Application builds and runtime bind mounts therefore read the runner's checked-out
+files. Editing a local dependency is insufficient to change a run: push that
+dependency change and update its SHA in `ci/dependencies.json`.
+
+### Manual and pull-request triggers
 
 The manual trigger normally requires the workflow to exist on the repository's
 default branch. The branch push trigger is available for initial development.
@@ -345,7 +465,7 @@ directed to a closed local port.
 
 ## 10. Validation performed during implementation
 
-The following checks passed before the first reported GitHub failure:
+The following implementation checks passed:
 
 - Seven helper regression tests.
 - Python syntax checks.
@@ -384,8 +504,23 @@ GitHub-hosted runner workspace. Fixed published ports could conflict with the
 existing local deployment even though container/network names are unique.
 
 No local containers were started or stopped during the implementation checks.
-Passing configuration checks did not prove that the images or services would
-start successfully on GitHub; the MongoDB failure illustrates that distinction.
+Configuration validation and runtime validation are separate: rendering a valid
+Compose configuration does not prove that an image can start on the runner kernel.
+
+The reported successful runtime validation used:
+
+| Item | Observed result |
+| --- | --- |
+| Runner label | `ubuntu-22.04` |
+| Operating system | Ubuntu 22.04.5 LTS |
+| Host and Docker kernel | `6.8.0-1070-azure` |
+| Architecture | `x86_64` |
+| Docker Compose | `v2.38.2` |
+| Workflow result | Completed without errors |
+| Run duration | 5 minutes 26 seconds |
+
+These observations establish a successful environment setup run. They do not
+extend the checks to application features that are not part of the workflow.
 
 ## 11. Commit, push and inspect a run
 
@@ -418,22 +553,54 @@ commit and push the fix, then inspect the newly triggered run.
 The existing repository-sync workflow targets `dips-branch-mongodb`; the new
 environment branch does not match that trigger.
 
-## 12. Reported failure and troubleshooting
+## 12. MongoDB kernel compatibility and troubleshooting
 
-The reported run produced:
+### Diagnosis and verified runner change
+
+The initial Ubuntu 24.04 run reached Keycloak readiness but MongoDB exited with
+code 1. The MongoDB service log identified the compatibility failure:
 
 ```text
-Both Compose configurations and required build contexts validated.
-Ready: Keycloak realm
-dependency failed to start: container cm-ci-ffaaa6a2e3-app-mongo exited (1)
+MongoDB cannot start: Linux kernel versions 6.19 and newer has a known
+incompatibility with this version of MongoDB.
 ```
 
-The Compose application startup command returned exit code 1. This establishes
-that Keycloak reached its readiness endpoint and MongoDB exited. It does **not**
-identify the MongoDB root cause. Authentication, storage, image/runtime problems
-or other causes cannot be distinguished from this summary alone.
+The diagnostic step showed Ubuntu 24.04.5 LTS with kernel
+`7.0.0-1017-azure`. Docker reported the same kernel. This identified an
+image/kernel compatibility failure rather than a missing Compose file or a
+repository authentication failure.
 
-Next diagnostic steps:
+The workflow runner was changed from `ubuntu-24.04` to `ubuntu-22.04`. The
+subsequent run used kernel `6.8.0-1070-azure` and completed without errors.
+The runner change resolved the observed startup failure without modifying the
+local MongoDB deployment or disabling authentication.
+
+MongoDB documents the affected kernel range and compatibility updates in its
+[release notes](https://www.mongodb.com/docs/v8.0/release-notes/8.0/) and
+[SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912). Check the exact
+MongoDB build and kernel when changing either dependency; an Ubuntu version
+label alone is not a permanent compatibility guarantee.
+
+### Locate runner diagnostics
+
+In the repository, open **Actions → Consent-Manager environment startup → the
+relevant run → Build and check environment → Show runner OS and Docker kernel**.
+This step executes:
+
+```bash
+cat /etc/os-release
+uname -a
+docker info --format 'Docker kernel: {{.KernelVersion}}; OS: {{.OperatingSystem}}; architecture: {{.Architecture}}'
+docker compose version
+```
+
+Inspect a run created from the updated workflow revision. Re-running an older
+revision does not add newly committed diagnostic steps to that revision.
+
+### Investigate subsequent failures
+
+For future failures, use service logs to identify the cause before changing
+configuration:
 
 1. Open **Actions → the failed run**.
 2. Confirm **Collect diagnostic logs** and **Upload diagnostic logs** ran.
@@ -460,9 +627,9 @@ Other useful checks:
 | Issuer mismatch or container connection failure | Generated address strategy, Keycloak hostname and container connectivity check |
 | New fix appears ineffective | Confirm the run's commit and dependency SHAs rather than re-running an old revision |
 
-The remaining work is to obtain MongoDB's log, resolve its startup failure, and
-confirm that the full readiness step passes. There is no confirmed MongoDB fix
-recorded as of this note.
+The MongoDB kernel compatibility issue described above is resolved for the
+reported Ubuntu 22.04 run. Any later startup failure requires assessment of its
+own logs and image/kernel versions.
 
 ## 13. Logs and cleanup
 
@@ -491,11 +658,11 @@ Abrupt runner termination can prevent cleanup steps from executing; the
 GitHub-hosted runner is itself temporary. The workflow is not intended for a
 shared or persistent self-hosted runner without further changes.
 
-## 14. Adding Jaime's tests later
+## 14. Integrating automated application tests
 
-When Jaime provides the tests, obtain the repository/branch or files, exact
+Application test integration requires the test repository/branch or files,
 installation and execution commands, expected URLs, required accounts/roles,
-and test data requirements.
+and test data definitions.
 
 Then:
 
@@ -517,8 +684,9 @@ suite being integrated.
 Stage one is complete when a fresh GitHub-hosted runner can check out the intended
 revisions, build/start both Compose projects, import the realm without manual
 configuration, pass all readiness checks, retain diagnostic artifacts, and clean
-up the disposable resources. The unresolved MongoDB failure currently prevents
-claiming that result.
+up the disposable resources. A successful run of the current environment workflow
+has been reported on Ubuntu 22.04, satisfying the environment setup validation
+stage for that run.
 
 Stage two is complete only after the agreed application tests run and report
 their results. Keep the workflow's environment-readiness result distinct from
