@@ -1,9 +1,12 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
+export default defineConfig(({mode}) => {
+  const env = loadEnv(mode, process.cwd(), '');
+
+  return {
   plugins: [react()],
-   base: '/consent-manager/',
+   base: env.VITE_BASE_PATH || '/consent-manager/',
    build: { sourcemap: true },
    server: {
     host: true, // Expose to local network (e.g. tablet)
@@ -13,4 +16,8 @@ export default defineConfig({
       'Content-Security-Policy': 'frame-ancestors *',
     },
   },
+  define: {
+    __APP_ENV__: env.APP_ENV,
+  }
+};
 });

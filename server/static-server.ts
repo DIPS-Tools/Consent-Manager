@@ -1,12 +1,9 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const app = express();
-const PORT = process.env.STATIC_PORT || 5173;
+const PORT = process.env.STATIC_PORT || "5173";
 
 // Get __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -17,7 +14,7 @@ const distPath = path.join(__dirname, '../dist');
 app.use('/consent-manager', express.static(distPath));
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'OK', service: 'static-server', timestamp: new Date().toISOString() });
 });
 
@@ -35,7 +32,7 @@ app.use('/consent-manager', (req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(parseInt(PORT), '0.0.0.0', () => {
   console.log(`Static server running on port ${PORT}`);
   console.log(`Serving files from: ${distPath}`);
   console.log(`Health check: http://localhost:${PORT}/health`);

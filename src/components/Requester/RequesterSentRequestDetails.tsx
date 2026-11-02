@@ -3,57 +3,16 @@ import { Link, useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { getRequest, getAllOwners } from "../../services/api";
 import { useIframe } from "../../IframeContext";
-import { getRequestPermissions } from "../../utils/policyParser";
+import { Request } from "../Interfaces/Requests";
+import { ODRLPolicy } from "../Interfaces/ODRL";
+import * as rdflib from "rdflib";
 
 // components
 import LoadingSpinner from "../LoadingSpinner";
-
-interface Refinement {
-  attribute: string;
-  instance: string;
-  value: string;
-}
-
-interface Permission {
-  dataset: string;
-  datasetRefinements: Refinement[];
-  action: string;
-  actionRefinements: Refinement[];
-  purpose: string;
-  purposeRefinements: Refinement[];
-  constraintRefinements: Refinement[];
-  constraints?: Array<{
-    leftOperand: string;
-    operator: string;
-    rightOperand: any;
-    description: string;
-  }>;
-  assignees?: Array<{
-    source: string;
-    refinements?: Array<{
-      leftOperand: string;
-      operator: string;
-      rightOperand: any;
-      description: string;
-    }>;
-  }>;
-}
-
-interface Request {
-  id: string;
-  requestName: string;
-  requester: {
-    requesterName: string;
-    requesterEmail: string;
-  };
-  permissions: Permission[];
-  policy?: any; // ODRL policy
-  status: string;
-  owners: string[];
-  ownersPending: string[];
-  ownersAccepted: string[];
-  ownersRejected: string[];
-}
+import renderPermissions from "../../utils/renderPermissions";
+import { useTranslation } from "react-i18next";
+import { fetchOntologies, getAttributeDropdownValue, getFeatureDropdownValue, loadGraph } from "../../helperFunctions/RequestDropdowns";
+import { Ontology } from "../Interfaces/Ontology";
 
 function RequesterSentRequestsDetails() {
   const { requestId } = useParams<{ requestId: string }>();
@@ -72,6 +31,62 @@ function RequesterSentRequestsDetails() {
   const [ownerDetails, setOwnerDetails] = useState<
     { name: string; email: string; status: string }[]
   >([]);
+  const { t, i18n } = useTranslation();
+  const [labels, setLabels] = useState<any>();
+  const [graph, setGraph] = useState<rdflib.Store>();
+    
+  useEffect(() => {
+    const loadLabels = async () => {
+      if (graph) {
+        const actions = await getFeatureDropdownValue(
+          graph,
+          "action"
+        );
+        const purposes = await getFeatureDropdownValue(
+          graph,
+          "purpose"
+        );
+        // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+        const refinements = await getAttributeDropdownValue(graph);
+        const labels = actions.concat(purposes).concat(refinements);
+        setLabels(labels);
+      }
+    };
+    loadLabels();
+  },[graph, i18n.language]);
+
+  const downloadODRL = async (policy: ODRLPolicy | undefined, owner: {name: string, email: string, status: string}) => {
+    if (!policy) {
+      alert(
+        t("policy_data_not_found")
+      );
+      return;
+    }
+
+    try {
+      policy["odrl:permission"].forEach(permission => {
+        delete permission["odrl:assignee"];
+        if (owner) {
+          permission["odrl:assigner"] = {"odrl:source": owner.email};
+        }
+      })
+      console.log("policy is: ", policy);
+      const json = JSON.stringify(policy, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `odrl_policy_${owner.name}.json`; // filename
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      console.log("ODRL downloaded successfully.");
+    } catch (err) {
+      console.error("Error downloading ODRL:", err);
+    }
+  };
 
   // Fetching all owners from the database
   useEffect(() => {
@@ -141,6 +156,14 @@ function RequesterSentRequestsDetails() {
 
         if (result.success) {
           setRequestDetails(result.data as Request);
+          let ontologies = await fetchOntologies() as Ontology[];
+          if (requestDetails?.selectedOntologies) {
+            ontologies = ontologies.concat(requestDetails.selectedOntologies);
+          }
+          const store = await loadGraph(ontologies);
+          if (store) {
+            setGraph(store);
+          }
         } else {
           setError("Request not found.");
         }
@@ -180,7 +203,7 @@ function RequesterSentRequestsDetails() {
   if (loading) return <LoadingSpinner />;
   if (error) return <div className="text-danger">{error}</div>;
   if (!requestDetails)
-    return <div className="text-danger">No request details available.</div>;
+    return <div className="text-danger">{t("no_request_details_available")}</div>;
 
   return (
     <>
@@ -194,7 +217,7 @@ function RequesterSentRequestsDetails() {
             to="/requesterBase/requesterRequests"
             role="button"
           >
-            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
           </Link>
         )}
         <h3 className={isIframeMode ? "mt-2" : "mt-4"}>
@@ -213,7 +236,7 @@ function RequesterSentRequestsDetails() {
               aria-controls="home-tab-pane"
               aria-selected="true"
             >
-              Request details
+              {t("request_details")}
             </button>
           </li>
           <li className="nav-item" role="presentation">
@@ -227,7 +250,7 @@ function RequesterSentRequestsDetails() {
               aria-controls="profile-tab-pane"
               aria-selected="false"
             >
-              Status
+              {t("status")}
             </button>
           </li>
         </ul>
@@ -240,79 +263,12 @@ function RequesterSentRequestsDetails() {
             role="tabpanel"
             aria-labelledby="home-tab"
           >
-            {(() => {
-              // Parse permissions from ODRL policy or fallback to legacy permissions
-              const parsedPermissions = getRequestPermissions(requestDetails);
 
-              return parsedPermissions.map((permission, ruleIndex) => (
-                <div key={ruleIndex} className="mb-4">
-                  <h4>Permission {ruleIndex + 1}</h4>
+            <text>
+              {requestDetails.extraText ? requestDetails.extraText : ""}
+            </text>
 
-                  <h5>Dataset:</h5>
-                  <p>{permission.dataset}</p>
-
-                  {permission.datasetRefinements?.length > 0 && (
-                    <div>
-                      <h5>Dataset permissions:</h5>
-                      <ul className="list-unstyled">
-                        {permission.datasetRefinements.map((ref, i) => (
-                          <li key={i}>
-                            Read access to <strong>{ref.attribute}</strong>{" "}
-                            items greater than <strong>{ref.value}</strong>.
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  <h5>Action:</h5>
-                  <p>{permission.action}</p>
-
-                  {permission.actionRefinements?.length > 0 && (
-                    <div>
-                      <h5>Action permissions:</h5>
-                      <ul className="list-unstyled">
-                        {permission.actionRefinements.map((ref, i) => (
-                          <li key={i}>
-                            Write access to <strong>{ref.attribute}</strong>{" "}
-                            items greater than <strong>{ref.value}</strong>.
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {permission.purposeRefinements?.length > 0 && (
-                    <div>
-                      <h5>Purpose permissions:</h5>
-                      <ul className="list-unstyled">
-                        {permission.purposeRefinements.map((ref, i) => (
-                          <li key={i}>
-                            Data are used for <strong>{ref.attribute}</strong>{" "}
-                            items greater than <strong>{ref.value}</strong>.
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {permission.constraintRefinements?.length > 0 && (
-                    <div>
-                      <h5>Constraints:</h5>
-                      <ul className="list-unstyled">
-                        {permission.constraintRefinements.map((ref, i) => (
-                          <li key={i}>
-                            Data meet the constraint:{" "}
-                            <strong>{ref.attribute}</strong> {ref.instance}{" "}
-                            <strong>{ref.value}</strong>.
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              ));
-            })()}
+            {renderPermissions(requestDetails, t, labels)}
           </div>
           {/* status tab */}
           <div
@@ -328,7 +284,7 @@ function RequesterSentRequestsDetails() {
                   htmlFor="statusFilter"
                   className={`${styles.formLabel} form-label me-2`}
                 >
-                  Filter by status:
+                  {t("filter_by_status")}:
                 </label>
                 <select
                   id="statusFilter"
@@ -336,10 +292,10 @@ function RequesterSentRequestsDetails() {
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
                 >
-                  <option value="All">All</option>
-                  <option value="Accepted">Accepted</option>
-                  <option value="Rejected">Rejected</option>
-                  <option value="Pending">Pending</option>
+                  <option value="All">{t("all")}</option>
+                  <option value="Accepted">{t("accepted")}</option>
+                  <option value="Rejected">{t("rejected")}</option>
+                  <option value="Pending">{t("pending")}</option>
                 </select>
               </div>
 
@@ -348,7 +304,7 @@ function RequesterSentRequestsDetails() {
                   <input
                     type="text"
                     className={`${styles.formInput} form-control`}
-                    placeholder="Search owner by name or email..."
+                    placeholder={t("search_owner_placeholder")}
                     aria-label="Recipient’s username"
                     aria-describedby="basic-addon2"
                     value={searchTerm}
@@ -363,19 +319,19 @@ function RequesterSentRequestsDetails() {
 
             {filteredOwners.length === 0 ? (
               <div className="text-center mt-5">
-                <h4> No matching requests</h4>
+                <h4>{t("no_matching_requests")}</h4>
                 <p className="mt-2">
-                  Try changing your filter options or search for another data
-                  owner
+                  {t("no_matching_requests_text_1")}
                 </p>
               </div>
             ) : (
               <table className="table mt-4">
                 <thead>
                   <tr>
-                    <th scope="col">Name</th>
-                    <th scope="col">Email</th>
-                    <th scope="col">Status</th>
+                    <th scope="col">{t("name")}</th>
+                    <th scope="col">{t("email")}</th>
+                    <th scope="col">{t("status")}</th>
+                    <th scope="col"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -394,6 +350,16 @@ function RequesterSentRequestsDetails() {
                       >
                         {owner.status}
                       </td>
+                      {owner.status === "Accepted" ? 
+                        <td>
+                        <button
+                          className={`${styles.primaryButton} btn`}
+                          onClick={() => downloadODRL(requestDetails?.policy, owner)}
+                        >
+                          {t("download_ODRL")}
+                        </button>
+                      </td>
+                      : <td></td>}           
                     </tr>
                   ))}
                 </tbody>
@@ -411,7 +377,7 @@ function RequesterSentRequestsDetails() {
                       className="page-link"
                       onClick={() => setCurrentPage(currentPage - 1)}
                     >
-                      Previous
+                      {t("previous")}
                     </button>
                   </li>
                   {[...Array(totalPages)].map((_, i) => (
@@ -438,7 +404,7 @@ function RequesterSentRequestsDetails() {
                       className="page-link"
                       onClick={() => setCurrentPage(currentPage + 1)}
                     >
-                      Next
+                      {t("next")}
                     </button>
                   </li>
                 </ul>

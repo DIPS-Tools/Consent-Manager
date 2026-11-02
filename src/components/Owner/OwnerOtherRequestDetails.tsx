@@ -1,79 +1,61 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useAuth } from "../../AuthContext";
+// import { useAuth } from "../../AuthContext";
 import { useIframe } from "../../IframeContext";
 import {
   getRequest,
-  getNegotiationByRequestId,
-  redirectToNegotiationDisplay,
+  // getNegotiationByRequestId,
+  // redirectToNegotiationDisplay,
 } from "../../services/api";
-import { getRequestPermissions } from "../../utils/policyParser";
+import { Request } from "../Interfaces/Requests";
 
 // css
 import styles from "../../css/Ontology.module.css";
+import * as rdflib from "rdflib";
 
 // components
 import LoadingSpinner from "../LoadingSpinner";
-
-interface Refinement {
-  attribute: string;
-  instance: string;
-  value: string;
-}
-
-interface Permission {
-  dataset: string;
-  datasetRefinements: Refinement[];
-  action: string;
-  actionRefinements: Refinement[];
-  purpose: string;
-  purposeRefinements: Refinement[];
-  constraintRefinements: Refinement[];
-  constraints?: Array<{
-    leftOperand: string;
-    operator: string;
-    rightOperand: any;
-    description: string;
-  }>;
-  assignees?: Array<{
-    source: string;
-    refinements?: Array<{
-      leftOperand: string;
-      operator: string;
-      rightOperand: any;
-      description: string;
-    }>;
-  }>;
-}
-
-interface Request {
-  id: string;
-  requestName: string;
-  requester: {
-    requesterId: string;
-    requesterName: string;
-    requesterEmail: string;
-  };
-  permissions: Permission[];
-  policy?: any; // ODRL policy
-  status: string;
-  ownersAccepted: string[];
-  ownersRejected: string[];
-  ownersPending: string[];
-}
+import renderPermissions from "../../utils/renderPermissions";
+import { useTranslation } from "react-i18next";
+import { fetchOntologies, getAttributeDropdownValue, getFeatureDropdownValue, loadGraph } from "../../helperFunctions/RequestDropdowns";
+import { Ontology } from "../Interfaces/Ontology";
 
 function OwnerOtherRequestsDetails() {
   const { requestId } = useParams<{ requestId: string }>();
-  const { isIframeMode, notifyParent } = useIframe();
+  const { isIframeMode } = useIframe();
+  // const { isIframeMode, notifyParent } = useIframe();
   const [requestDetails, setRequestDetails] = useState<Request | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
   const [updating] = useState<boolean>(false);
-  const [negotiationInfo, setNegotiationInfo] = useState<any>(null);
-  const [checkingNegotiation, setCheckingNegotiation] =
-    useState<boolean>(false);
-  const [autoRedirectAttempted, setAutoRedirectAttempted] =
-    useState<boolean>(false);
+  const [negotiationInfo] = useState<any>(null);
+  // const [checkingNegotiation, setCheckingNegotiation] =
+  //   useState<boolean>(false);
+  // const [autoRedirectAttempted, setAutoRedirectAttempted] =
+  //   useState<boolean>(false);
+  const { t, i18n } = useTranslation();
+  const [labels, setLabels] = useState<any>();
+  const [graph, setGraph] = useState<rdflib.Store>();
+    
+  useEffect(() => {
+    const loadLabels = async () => {
+      if (graph){
+        const actions = await getFeatureDropdownValue(
+          graph,
+          "action"
+        );
+        const purposes = await getFeatureDropdownValue(
+          graph,
+          "purpose"
+        );
+        // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+        const refinements = await getAttributeDropdownValue(graph);
+        const labels = actions.concat(purposes).concat(refinements);
+        setLabels(labels);
+      }
+    };
+    loadLabels();
+  },[graph, i18n.language]);
 
   useEffect(() => {
     const fetchRequestDetails = async () => {
@@ -88,77 +70,83 @@ function OwnerOtherRequestsDetails() {
 
         if (result.success) {
           setRequestDetails(result.data as Request);
+          let ontologies = await fetchOntologies() as Ontology[];
+          if (requestDetails?.selectedOntologies) {
+            ontologies = ontologies.concat(requestDetails.selectedOntologies);
+          }
+          const store = await loadGraph(ontologies);
+          setGraph(store);
 
           // Check if there's an existing negotiation for this request
-          try {
-            const negotiationResult = await getNegotiationByRequestId(
-              requestId
-            );
-            if (negotiationResult.success && negotiationResult.negotiationId) {
-              setNegotiationInfo(negotiationResult);
-              console.log("📋 Found existing negotiation:", negotiationResult);
+          // try {
+          //   const negotiationResult = await getNegotiationByRequestId(
+          //     requestId
+          //   );
+          //   if (negotiationResult.success && negotiationResult.negotiationId) {
+          //     setNegotiationInfo(negotiationResult);
+          //     console.log("📋 Found existing negotiation:", negotiationResult);
 
-              // Debug iframe and redirect conditions
-              console.log("🔍 Auto-redirect conditions check:", {
-                isIframeMode,
-                autoRedirectAttempted,
-                hasNegotiationId: !!negotiationResult.negotiationId,
-                userExists: !!user,
-                hasMongoUserId: !!user?.userData?.mongoUserId,
-                shouldAutoRedirect: isIframeMode && !autoRedirectAttempted,
-              });
+          //     // Debug iframe and redirect conditions
+          //     console.log("🔍 Auto-redirect conditions check:", {
+          //       isIframeMode,
+          //       autoRedirectAttempted,
+          //       hasNegotiationId: !!negotiationResult.negotiationId,
+          //       userExists: !!user,
+          //       hasMongoUserId: !!user?.userData?.mongoUserId,
+          //       shouldAutoRedirect: isIframeMode && !autoRedirectAttempted,
+          //     });
 
-              // Auto-redirect to negotiation in iframe mode (only if not already attempted)
-              if (isIframeMode && !autoRedirectAttempted) {
-                console.log(
-                  "🔄 Auto-redirecting to existing negotiation in iframe mode..."
-                );
-                setAutoRedirectAttempted(true);
+          //     // Auto-redirect to negotiation in iframe mode (only if not already attempted)
+          //     if (isIframeMode && !autoRedirectAttempted) {
+          //       console.log(
+          //         "🔄 Auto-redirecting to existing negotiation in iframe mode..."
+          //       );
+          //       setAutoRedirectAttempted(true);
 
-                // Get user info and redirect immediately
-                const authUser = user;
-                if (authUser && authUser.userData?.mongoUserId) {
-                  const accessToken =
-                    authUser?.apiToken || localStorage.getItem("token");
+          //       // Get user info and redirect immediately
+          //       const authUser = user;
+          //       if (authUser && authUser.userData?.mongoUserId) {
+          //         const accessToken =
+          //           authUser?.apiToken || localStorage.getItem("token");
 
-                  if (accessToken) {
-                    console.log(
-                      "🚀 Auto-redirecting with provider token in iframe mode"
-                    );
-                    const userType =
-                      authUser.role === "owner" ? "provider" : "consumer";
+          //         if (accessToken) {
+          //           console.log(
+          //             "🚀 Auto-redirecting with provider token in iframe mode"
+          //           );
+          //           const userType =
+          //             authUser.role === "owner" ? "provider" : "consumer";
 
-                    try {
-                      await redirectToNegotiationDisplay(
-                        negotiationResult.negotiationId,
-                        accessToken,
-                        authUser.userData.mongoUserId,
-                        userType
-                      );
+          //           try {
+          //             await redirectToNegotiationDisplay(
+          //               negotiationResult.negotiationId,
+          //               accessToken,
+          //               authUser.userData.mongoUserId,
+          //               userType
+          //             );
 
-                      // Notify parent that we're redirecting
-                      notifyParent({
-                        action: "negotiation_redirect",
-                        negotiationId: negotiationResult.negotiationId,
-                        requestId: requestId,
-                      });
+          //             // Notify parent that we're redirecting
+          //             notifyParent({
+          //               action: "negotiation_redirect",
+          //               negotiationId: negotiationResult.negotiationId,
+          //               requestId: requestId,
+          //             });
 
-                      return; // Exit early since we're redirecting
-                    } catch (redirectError) {
-                      console.error("❌ Auto-redirect failed:", redirectError);
-                      // Continue with normal flow if redirect fails
-                    }
-                  } else {
-                    console.warn("⚠️ No token available for auto-redirect");
-                  }
-                } else {
-                  console.warn("⚠️ No user info available for auto-redirect");
-                }
-              }
-            }
-          } catch (negotiationError) {
-            console.log("ℹ️ No existing negotiation found for this request");
-          }
+          //             return; // Exit early since we're redirecting
+          //           } catch (redirectError) {
+          //             console.error("❌ Auto-redirect failed:", redirectError);
+          //             // Continue with normal flow if redirect fails
+          //           }
+          //         } else {
+          //           console.warn("⚠️ No token available for auto-redirect");
+          //         }
+          //       } else {
+          //         console.warn("⚠️ No user info available for auto-redirect");
+          //       }
+          //     }
+          //   }
+          // } catch (negotiationError) {
+          //   console.log("ℹ️ No existing negotiation found for this request");
+          // }
         } else {
           setError("Request not found.");
         }
@@ -173,155 +161,155 @@ function OwnerOtherRequestsDetails() {
     fetchRequestDetails();
   }, [requestId]);
 
-  const { user } = useAuth();
+  // const { user } = useAuth();
 
   // Separate effect for auto-redirect when user and negotiation info are both available
-  useEffect(() => {
-    // Add small delay to ensure iframe mode is properly detected
-    const checkAndRedirect = () => {
-      if (isIframeMode && negotiationInfo && user && !autoRedirectAttempted) {
-        console.log("🔄 Triggering auto-redirect effect...");
-        console.log("🔍 Auto-redirect conditions check (separate effect):", {
-          isIframeMode,
-          hasNegotiationInfo: !!negotiationInfo,
-          hasUser: !!user,
-          hasMongoUserId: !!user?.userData?.mongoUserId,
-          autoRedirectAttempted,
-          negotiationId: negotiationInfo.negotiationId,
-        });
+  // useEffect(() => {
+  //   // Add small delay to ensure iframe mode is properly detected
+  //   const checkAndRedirect = () => {
+  //     if (isIframeMode && negotiationInfo && user && !autoRedirectAttempted) {
+  //       console.log("🔄 Triggering auto-redirect effect...");
+  //       console.log("🔍 Auto-redirect conditions check (separate effect):", {
+  //         isIframeMode,
+  //         hasNegotiationInfo: !!negotiationInfo,
+  //         hasUser: !!user,
+  //         hasMongoUserId: !!user?.userData?.mongoUserId,
+  //         autoRedirectAttempted,
+  //         negotiationId: negotiationInfo.negotiationId,
+  //       });
 
-        setAutoRedirectAttempted(true);
+  //       setAutoRedirectAttempted(true);
 
-        const performAutoRedirect = async () => {
-          if (user.userData?.mongoUserId) {
-            const accessToken = user?.apiToken || localStorage.getItem("token");
+  //       const performAutoRedirect = async () => {
+  //         if (user.userData?.mongoUserId) {
+  //           const accessToken = user?.apiToken || localStorage.getItem("token");
 
-            if (accessToken) {
-              console.log(
-                "🚀 Performing auto-redirect with provider token in iframe mode"
-              );
-              const userType = user.role === "owner" ? "provider" : "consumer";
+  //           if (accessToken) {
+  //             console.log(
+  //               "🚀 Performing auto-redirect with provider token in iframe mode"
+  //             );
+  //             const userType = user.role === "owner" ? "provider" : "consumer";
 
-              try {
-                // Notify parent that we're opening negotiation in new tab
-                notifyParent({
-                  action: "negotiation_opened",
-                  negotiationId: negotiationInfo.negotiationId,
-                  requestId: requestId,
-                  method: "new_tab",
-                });
+  //             try {
+  //               // Notify parent that we're opening negotiation in new tab
+  //               notifyParent({
+  //                 action: "negotiation_opened",
+  //                 negotiationId: negotiationInfo.negotiationId,
+  //                 requestId: requestId,
+  //                 method: "new_tab",
+  //               });
 
-                // Small delay to ensure parent gets the message
-                await new Promise((resolve) => setTimeout(resolve, 500));
+  //               // Small delay to ensure parent gets the message
+  //               await new Promise((resolve) => setTimeout(resolve, 500));
 
-                await redirectToNegotiationDisplay(
-                  negotiationInfo.negotiationId,
-                  accessToken,
-                  user.userData.mongoUserId,
-                  userType
-                );
-              } catch (redirectError) {
-                console.error("❌ Auto-redirect failed:", redirectError);
-                setAutoRedirectAttempted(false); // Allow retry
+  //               await redirectToNegotiationDisplay(
+  //                 negotiationInfo.negotiationId,
+  //                 accessToken,
+  //                 user.userData.mongoUserId,
+  //                 userType
+  //               );
+  //             } catch (redirectError) {
+  //               console.error("❌ Auto-redirect failed:", redirectError);
+  //               setAutoRedirectAttempted(false); // Allow retry
 
-                // Show error message if tab was blocked
-                if (
-                  typeof redirectError === "object" &&
-                  redirectError !== null &&
-                  "message" in redirectError
-                ) {
-                  if (
-                    (redirectError as { message: string }).message.includes(
-                      "blocked"
-                    )
-                  ) {
-                    setError(
-                      'Please click "Open Negotiation Manually" below or check your browser\'s pop-up blocker settings.'
-                    );
-                  }
-                }
-              }
-            } else {
-              console.warn("⚠️ No token available for auto-redirect");
-            }
-          } else {
-            console.warn("⚠️ No MongoDB user ID available for auto-redirect");
-          }
-        };
+  //               // Show error message if tab was blocked
+  //               if (
+  //                 typeof redirectError === "object" &&
+  //                 redirectError !== null &&
+  //                 "message" in redirectError
+  //               ) {
+  //                 if (
+  //                   (redirectError as { message: string }).message.includes(
+  //                     "blocked"
+  //                   )
+  //                 ) {
+  //                   setError(
+  //                     'Please click "Open Negotiation Manually" below or check your browser\'s pop-up blocker settings.'
+  //                   );
+  //                 }
+  //               }
+  //             }
+  //           } else {
+  //             console.warn("⚠️ No token available for auto-redirect");
+  //           }
+  //         } else {
+  //           console.warn("⚠️ No MongoDB user ID available for auto-redirect");
+  //         }
+  //       };
 
-        performAutoRedirect();
-      }
-    };
+  //       performAutoRedirect();
+  //     }
+  //   };
 
-    // Use a small timeout to ensure all context is ready
-    const timeoutId = setTimeout(checkAndRedirect, 100);
+  //   // Use a small timeout to ensure all context is ready
+  //   const timeoutId = setTimeout(checkAndRedirect, 100);
 
-    return () => clearTimeout(timeoutId);
-  }, [
-    isIframeMode,
-    negotiationInfo,
-    user,
-    autoRedirectAttempted,
-    requestId,
-    notifyParent,
-  ]);
+  //   return () => clearTimeout(timeoutId);
+  // }, [
+  //   isIframeMode,
+  //   negotiationInfo,
+  //   user,
+  //   autoRedirectAttempted,
+  //   requestId,
+  //   notifyParent,
+  // ]);
 
   // Function to redirect to negotiation display
-  const viewNegotiation = async () => {
-    if (!negotiationInfo?.negotiationId || !user) {
-      console.error("❌ Missing negotiation ID or user info");
-      return;
-    }
+  // const viewNegotiation = async () => {
+  //   if (!negotiationInfo?.negotiationId || !user) {
+  //     console.error("❌ Missing negotiation ID or user info");
+  //     return;
+  //   }
 
-    setCheckingNegotiation(true);
+  //   setCheckingNegotiation(true);
 
-    try {
-      // Get the auth token from provider's context instead of localStorage
-      const accessToken = user?.apiToken || localStorage.getItem("token");
+  //   try {
+  //     // Get the auth token from provider's context instead of localStorage
+  //     const accessToken = user?.apiToken || localStorage.getItem("token");
 
-      if (!accessToken) {
-        setError("No authentication token found for provider");
-        setCheckingNegotiation(false);
-        return;
-      }
+  //     if (!accessToken) {
+  //       setError("No authentication token found for provider");
+  //       setCheckingNegotiation(false);
+  //       return;
+  //     }
 
-      console.log("🔑 Using provider token for negotiation view");
+  //     console.log("🔑 Using provider token for negotiation view");
 
-      // Get MongoDB user ID (we know the user has one since they can approve)
-      const mongoUserId = user.userData?.mongoUserId;
+  //     // Get MongoDB user ID (we know the user has one since they can approve)
+  //     const mongoUserId = user.userData?._id;
 
-      if (!mongoUserId) {
-        setError("MongoDB user ID not found. Please contact support.");
-        setCheckingNegotiation(false);
-        return;
-      }
+  //     if (!mongoUserId) {
+  //       setError("MongoDB user ID not found. Please contact support.");
+  //       setCheckingNegotiation(false);
+  //       return;
+  //     }
 
-      // Determine user type based on role
-      const userType = user.role === "owner" ? "provider" : "consumer";
+  //     // Determine user type based on role
+  //     const userType = user.role === "owner" ? "provider" : "consumer";
 
-      console.log("🔗 Redirecting to negotiation with:", {
-        negotiationId: negotiationInfo.negotiationId,
-        mongoUserId,
-        userType,
-      });
+  //     console.log("🔗 Redirecting to negotiation with:", {
+  //       negotiationId: negotiationInfo.negotiationId,
+  //       mongoUserId,
+  //       userType,
+  //     });
 
-      // Redirect to negotiation display (now async)
-      await redirectToNegotiationDisplay(
-        negotiationInfo.negotiationId,
-        accessToken,
-        mongoUserId,
-        userType
-      );
-    } catch (error) {
-      console.error("❌ Error redirecting to negotiation:", error);
-      setError("Failed to open negotiation. Please try again.");
-      setCheckingNegotiation(false);
-    }
-  };
+  //     // Redirect to negotiation display (now async)
+  //     await redirectToNegotiationDisplay(
+  //       negotiationInfo.negotiationId,
+  //       accessToken,
+  //       mongoUserId,
+  //       userType
+  //     );
+  //   } catch (error) {
+  //     console.error("❌ Error redirecting to negotiation:", error);
+  //     setError("Failed to open negotiation. Please try again.");
+  //     setCheckingNegotiation(false);
+  //   }
+  // };
 
   if (loading) return <LoadingSpinner />;
   if (error) return <div className="text-danger">{error}</div>;
-  if (!requestDetails) return <div>No request details found.</div>;
+  if (!requestDetails) return <div>{t("no_request_details_available")}</div>;
 
   return (
     <>
@@ -335,14 +323,14 @@ function OwnerOtherRequestsDetails() {
             to="/ownerBase/ownerOtherRequests"
             role="button"
           >
-            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+            <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
           </Link>
         )}
         <h3 className={isIframeMode ? "mt-2" : "mt-4"}>
           {requestDetails.requestName}
         </h3>
 
-        <h5 className="mt-4 mb-3">Requester details</h5>
+        <h5 className="mt-4 mb-3">{t("requester_details")}</h5>
         <p>
           <i className="fa-solid fa-user me-3"></i>
           {requestDetails.requester.requesterName}
@@ -352,146 +340,33 @@ function OwnerOtherRequestsDetails() {
           {requestDetails.requester.requesterEmail}
         </p>
 
-        {(() => {
-          // Parse permissions from ODRL policy or fallback to legacy permissions
-          const parsedPermissions = getRequestPermissions(requestDetails);
+        <text>
+          {requestDetails.extraText ? requestDetails.extraText : ""}
+        </text>
 
-          return parsedPermissions.map((permission, ruleIndex) => (
-            <div key={ruleIndex} className="mb-4 mt-4">
-              <h5>Permission {ruleIndex + 1}</h5>
-              <h5 className="mt-4">What’s being requested</h5>
-              <p>
-                <strong>Dataset:</strong> The requester wants access to data
-                from <strong>{permission.dataset}</strong>.
-              </p>
-              <p>
-                <strong>Action:</strong> The requester wants to{" "}
-                <strong>{permission.action}</strong> to this dataset.
-              </p>
-              <p>
-                <strong>Purpose:</strong> This request is for{" "}
-                <strong>{permission.purpose}</strong> reasons.
-              </p>
-
-              {/* Show generic ODRL constraints */}
-              {permission.constraints && permission.constraints.length > 0 && (
-                <div className="mt-3">
-                  <h6>Policy Constraints:</h6>
-                  <ul className="list-unstyled ms-3">
-                    {permission.constraints.map((constraint, i) => (
-                      <li key={i} className="mb-1">
-                        <small className="text-muted">
-                          • {constraint.description}
-                        </small>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Show generic ODRL assignees */}
-              {permission.assignees && permission.assignees.length > 0 && (
-                <div className="mt-3">
-                  <h6>Assigned To:</h6>
-                  {permission.assignees.map((assignee, i) => (
-                    <div key={i} className="ms-3">
-                      <p className="mb-1">
-                        <strong>{assignee.source}</strong>
-                      </p>
-                      {assignee.refinements &&
-                        assignee.refinements.map((ref, j) => (
-                          <p key={j} className="mb-1 ms-2">
-                            <small className="text-muted">
-                              └ {ref.description}
-                            </small>
-                          </p>
-                        ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {permission.datasetRefinements?.length > 0 && (
-                <div>
-                  <h5>Dataset conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.datasetRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data about <strong>{ref.attribute}</strong> items
-                        greater than <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.actionRefinements?.length > 0 && (
-                <div>
-                  <h5>Action conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.actionRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Write access to <strong>{ref.attribute}</strong> items
-                        greater than <strong> {ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.purposeRefinements?.length > 0 && (
-                <div>
-                  <h5>Purpose conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.purposeRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data will be used for <strong>{ref.attribute}</strong>{" "}
-                        items greater than <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.constraintRefinements?.length > 0 && (
-                <div>
-                  <h5>Constraints:</h5>
-                  <ul className="list-unstyled">
-                    {permission.constraintRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data should meet the constraint:{" "}
-                        <strong>{ref.attribute}</strong> {ref.instance}{" "}
-                        <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          ));
-        })()}
+        {renderPermissions(requestDetails, t, labels)}
 
         {/* Show negotiation info if exists */}
         {negotiationInfo && (
           <div className="alert alert-info" role="alert">
             <div className="d-flex justify-content-between align-items-center">
               <div>
-                <strong>Negotiation Available</strong>
+                <strong>{t("negotiation_available")}</strong>
                 <br />
                 <small>
-                  This consent request has an associated negotiation (ID:{" "}
+                  {t("negotiation_available_text_1")} (ID:{" "}
                   {negotiationInfo.negotiationId})
                 </small>
               </div>
-              {!isIframeMode && (
+              {/*!isIframeMode && (
                 <button
                   className={`${styles.secondaryButton} btn`}
                   onClick={viewNegotiation}
                   disabled={checkingNegotiation}
                 >
-                  {checkingNegotiation ? "Loading..." : "View Negotiation"}
+                  {checkingNegotiation ? `${t("loading")}...` : t("view_negotiation")}
                 </button>
-              )}
+              )*/}
             </div>
           </div>
         )}
@@ -507,7 +382,7 @@ function OwnerOtherRequestsDetails() {
                 data-bs-toggle="modal"
                 data-bs-target="#acceptRequestModal"
               >
-                Accept
+                {t("accept")}
               </button>
             </div>
             <div className="ms-3">
@@ -517,7 +392,7 @@ function OwnerOtherRequestsDetails() {
                 data-bs-target="#negotiateRequestModal"
                 disabled={updating}
               >
-                {updating ? "Processing..." : "Negotiate"}
+                {updating ? `${t("processing")}...` : t("negotiate")}
               </button>
             </div>
 
@@ -528,7 +403,7 @@ function OwnerOtherRequestsDetails() {
                 data-bs-target="#rejectRequestModal"
                 disabled={updating}
               >
-                {updating ? "Processing..." : "Reject"}
+                {updating ? `${t("processing")}...` : t("reject")}
               </button>
             </div>
           </div>
@@ -538,25 +413,24 @@ function OwnerOtherRequestsDetails() {
         {isIframeMode && negotiationInfo && (
           <div className="text-center mt-4">
             <div className="spinner-border text-primary" role="status">
-              <span className="visually-hidden">Loading...</span>
+              <span className="visually-hidden">{t("loading")}...</span>
             </div>
-            <p className="mt-2">Opening negotiation dashboard...</p>
-            <small className="text-muted">This will open in a new tab</small>
+            <p className="mt-2">{t("opening_negotiation_dashboard")}...</p>
+            <small className="text-muted">{t("this_will_open_a_new_tab")}</small>
             <div className="mt-3">
               <p className="text-muted small">
                 <i className="fa-solid fa-circle-info me-1"></i>
-                If the tab doesn't open, please check your browser's pop-up
-                blocker
+                {t("new_tab_troubleshoot")}
               </p>
-              <button
+              {/* <button
                 className={`${styles.primaryButton} btn btn-sm mt-2`}
                 onClick={viewNegotiation}
                 disabled={checkingNegotiation}
               >
                 {checkingNegotiation
-                  ? "Opening..."
-                  : "Open Negotiation Manually"}
-              </button>
+                  ? `${t("opening")}...`
+                  : t("opening_negotiation_manually")}
+              </button> */}
             </div>
           </div>
         )}

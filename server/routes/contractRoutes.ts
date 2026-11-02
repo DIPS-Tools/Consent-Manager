@@ -1,7 +1,9 @@
 import express from "express";
-import { db } from "../config/firebase.js";
-import { Request, Response } from "express";
+import { db } from "../config/database.service.ts";
+import { Request, Response, NextFunction } from "express";
+import { verify } from "../config/keycloak";
 import fetch from "node-fetch";
+import { ObjectId } from "mongodb";
 
 const router = express.Router();
 
@@ -9,150 +11,91 @@ interface AuthRequest extends Request {
   user?: any;
 }
 
-const extractAccessToken = (apiToken: any): string | undefined => {
-  if (!apiToken) return undefined;
-  if (typeof apiToken === "string") {
-    if (apiToken.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(apiToken);
-        return parsed.access_token || parsed.token || apiToken;
-      } catch {
-        return apiToken;
-      }
-    }
-    return apiToken;
-  }
-  return apiToken.access_token || apiToken.token;
-};
-
-const fetchUserDetails = async (
-  baseUrl: string,
-  token: string,
-  userId: string,
-  label: "consumer" | "provider"
-) => {
-  try {
-    const url = `${baseUrl}/user/details/?user_id=${encodeURIComponent(
-      userId
-    )}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    console.log(`User details fetch (${label}) status:`, response.status);
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.warn(`User details fetch (${label}) failed:`, errorText);
-      return null;
-    }
-
-    return await response.json();
-  } catch (error) {
-    console.warn(`User details fetch (${label}) error:`, error);
-    return null;
-  }
-};
-
 // Middleware to check API token
 export async function authorizeRequest(
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ) {
-  const token = req.headers["x-api-token"] as string | undefined;
+  const input_accesstoken = req.headers["x-api-token"] as string | undefined;
+
   const { requestId } = req.params;
 
-  if (!token) {
+  if (!input_accesstoken) {
     return res
       .status(401)
       .json({ success: false, error: "API token is required" });
   }
 
   try {
-    // --- Find user by token ---
-    const ownersSnap = await db
-      .collection("owners")
-      .where("apiToken.access_token", "==", token)
-      .get();
-    const requestersSnap = await db
-      .collection("requesters")
-      .where("apiToken.access_token", "==", token)
-      .get();
+    let verification = null;
+    let request_user = null;
+    let request_user_id: string = "";
+    let role = "unknown";
 
-    let userDoc = null;
-    let role: "owner" | "requester" | null = null;
-
-    if (!ownersSnap.empty) {
-      userDoc = ownersSnap.docs[0];
-      role = "owner";
-    } else if (!requestersSnap.empty) {
-      userDoc = requestersSnap.docs[0];
-      role = "requester";
-    } else {
-      return res
-        .status(401)
-        .json({ success: false, error: "Invalid API token" });
-    }
-
-    const userData = userDoc.data();
-
-    // --- Decode JWT to get email ---
-    let tokenPayload: any;
     try {
-      tokenPayload = jwt.decode(token);
-    } catch {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid token format" });
+      verification = await verify(input_accesstoken);
+
+      if (verification?.success){
+        console.log("Verified:",verification);
+        if (req.body) {
+          request_user = req.body["user"];
+          request_user_id = req.body["user"]["uid"];
+          if (verification.email != request_user.email) {
+            console.log("User data:", request_user);
+            return res.status(403).json({ success: false, error: `Token email mismatch: ${verification.email} vs. ${request_user.email}` });
+          }
+        }
+        else {
+          let userDoc = await db
+          .collection("users")
+          .findOne({email: {$eq: verification.email}})//look for user id
+          if (userDoc) {
+            request_user_id = userDoc._id.toString();
+          }
+          else {
+            return res
+            .status(401)
+            .json({ success: false, error: "User not found." });
+          }
+          
+        }
+        if (verification?.type === "consumer") {
+          role = "requester";
+        }
+        else if (verification?.type === "provider") {
+          role = "owner";
+        }
+        const requestData = await db.collection("requests").findOne({_id: {$eq: new ObjectId(requestId)}});
+        if (!requestData) {
+          return res
+            .status(404)
+            .json({ success: false, error: "Request not found" });
+        }
+
+        const exists = requestData.owners.some((owner: { toString: () => string; }) => owner.toString() === request_user_id);
+
+        if (!exists) {
+          console.log(`${request_user_id} missing in ${requestData.owners}`);
+          return res
+            .status(403)
+            .json({ success: false, error: "Not authorized for this request" });
+        }
+        //--- Attach user info to request ---
+        req.user = { uid: request_user_id, email: verification.email, role, token: input_accesstoken };
+        next();
+      }
+    }    
+    catch(error) {
+      console.error(error);
+      return res.status(500).json({ success: false, error: "Authorization failed" });
     }
-
-    if (!tokenPayload?.sub || tokenPayload.sub !== userData.email) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Token email mismatch" });
-    }
-
-    // --- Check if request belongs to this user ---
-    const requestSnap = await db.collection("requests").doc(requestId).get();
-    if (!requestSnap.exists) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Request not found" });
-    }
-
-    const requestData = requestSnap.data();
-    const ownerDocs = db.collection("owners");
-    const ownerEmails: string[] = [];
-    await ownerDocs.get().then((querySnapshot) => {
-        querySnapshot.forEach((doc) => {
-          ownerEmails.push( 
-            //id: doc.id, 
-            doc.data().email )
-        })
-    });
-    // This follows the assumption that emails are unique.
-    const ownsRequest =
-      (role === "owner" && ownerEmails.includes(userData.email)) ||
-      (role === "requester" && requestData?.requesterEmail === userData.email);
-
-    if (!ownsRequest) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Not authorized for this request" });
-    }
-
-    // --- Attach user info to request ---
-    req.user = { uid: userDoc.id, email: userData.email, role };
-
-    next();
-  } catch (err) {
-    console.error("Authorization error:", err);
-    res.status(500).json({ success: false, error: "Authorization failed" });
+  } catch(error) {
+    console.error(error);
+    return res.status(500).json({ success: false, error: "Authorization failed" });
   }
 }
+
 
 // POST /api/requests/:requestId/createContract
 router.post(
@@ -165,14 +108,13 @@ router.post(
 
       console.log("Fetching request to verify existence.");
       // --- Fetch the request to verify existence ---
-      const requestSnap = await db.collection("requests").doc(requestId).get();
-      if (!requestSnap.exists) {
+      const requestData = await db.collection("requests").findOne({_id: {$eq: new ObjectId(requestId)}});
+      if (!requestData) {
         return res
           .status(404)
           .json({ success: false, error: "Request not found" });
       }
 
-      const requestData = requestSnap.data();
       console.log("Collecting natural language document.");
 
       // --- Collect natural language document from extraText and extraTerms ---
@@ -186,13 +128,15 @@ router.post(
 
       // const odrlPolicy = permissionsToODRLPolicy(requestId, req.user.uid, requestData?.requester.requesterId, policy);
       // console.log("This is the ODRL policy: ", JSON.stringify(odrlPolicy));
-      //get user details:
-      const negotiationApiUrl =
-        process.env.EXTERNAL_API_BASE_URL ||
-        "https://dips.soton.ac.uk/negotiation-api";
 
       const requesterUid = requestData?.requester?.requesterId;
       const providerUid = req.user?.uid;
+      if (!requesterUid || !providerUid) {
+        return res.status(500).json({
+          success: false,
+          error: "Requester or provider id undefined.",
+        });
+      }
       console.log("Contract contacts lookup:", {
         requesterUid,
         providerUid,
@@ -202,73 +146,13 @@ router.post(
 
       const contacts: Record<string, any> = {};
 
-      if (requesterUid) {
-        const requesterDoc = await db
-          .collection("requesters")
-          .doc(requesterUid)
-          .get();
-        const requesterData = requesterDoc.exists ? requesterDoc.data() : null;
-        const consumerMongoId = requesterData?.mongoUserId;
-        const consumerToken = extractAccessToken(requesterData?.apiToken);
-
-        console.log("Consumer lookup:", {
-          consumerMongoId,
-          hasConsumerToken: !!consumerToken,
-        });
-
-        if (consumerMongoId && consumerToken) {
-          const consumerDetails = await fetchUserDetails(
-            negotiationApiUrl,
-            consumerToken,
-            consumerMongoId,
-            "consumer"
-          );
-          if (consumerDetails) {
-            contacts.consumer = consumerDetails;
-          } else {
-            contacts.consumer = { user_id: consumerMongoId };
-          }
-        } else if (consumerMongoId) {
-          contacts.consumer = { user_id: consumerMongoId };
-        }
-      }
-
-      if (providerUid) {
-        const providerDoc = await db
-          .collection("owners")
-          .doc(providerUid)
-          .get();
-        const providerData = providerDoc.exists ? providerDoc.data() : null;
-        const providerMongoId = providerData?.mongoUserId;
-        const providerToken = extractAccessToken(providerData?.apiToken);
-
-        console.log("Provider lookup:", {
-          providerMongoId,
-          hasProviderToken: !!providerToken,
-        });
-        console.log("providerMongoId", providerMongoId)
-        if (providerMongoId && providerToken) {
-          const providerDetails = await fetchUserDetails(
-            negotiationApiUrl,
-            providerToken,
-            providerMongoId,
-            "provider"
-          );
-          if (providerDetails) {
-            contacts.provider = providerDetails;
-          } else {
-            contacts.provider = { user_id: providerMongoId };
-          }
-        } else if (providerMongoId) {
-          contacts.provider = { user_id: providerMongoId };
-        }
+      contacts.consumer = {
+        _id: requesterUid
       }
 
       //add another items, which is not retrieved form Negotiation!
       contacts.provider = {
-        ...contacts.provider,
-        citizen: "UK (this is a fixed value, need to be set according to payload, will be fixing)",
-        passport_id: "NO222222 (this is a fixed value, need to be set according to payload)",
+        _id: providerUid
       };
 
       // Assign the provider's unique id to the policy as an ODRL assigner.
@@ -280,16 +164,19 @@ router.post(
 
       console.log("Resolved contacts for contract payload:", contacts);
 
+      const validity_period = process.env.CONTRACT_VALIDITY_PERIOD || 12;
+      const notice_period = process.env.CONTRACT_NOTICE_PERIOD || 0;
+
       // --- Prepare payload for external contract API ---
       const payload = {
         _id: requestId,
         client_optional_info: {
           consent_id: requestId,
         },
-        cactus_format: 1,
+        cactus_format: null,
         contract_type: "pda",
-        validity_period: 12,
-        notice_period: 0,
+        validity_period: validity_period,
+        notice_period: notice_period,
         contacts: contacts,
         resource_description: {},
         definitions: {},
@@ -311,7 +198,9 @@ router.post(
       console.log("the external api is: ", externalApiUrl);
       const response = await fetch(`${externalApiUrl}/contract/create`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" ,
+          "Authorization": `Bearer ${req.user.token}` ,
+        },
         body: JSON.stringify(payload),
       });
 
@@ -327,7 +216,7 @@ router.post(
         console.error("Error creating contract:", err);
         res.status(500).json({
           success: false,
-          error: data.message || "Failed to create contract at: " + externalApiUrl,
+          error: data.message || "Failed to create contract at: " + externalApiUrl + " " + response.statusText,
         });
       }
     }
@@ -335,14 +224,66 @@ router.post(
 
 // GET /api/requests/:requestId/contract
 router.get(
-    "/:requestId/contract",
-    async (req: Request, res) => {
-      const { requestId } = req.params; // matches middleware
-      const requestSnap = await db.collection("requests").doc(requestId).get();
-      const contractId = requestSnap.data()?.contractId || null;
-
-      res.json({ success: true, contractId });
+  "/:requestId/contract",
+  authorizeRequest,
+  async (req: AuthRequest, res) => {
+    const { requestId } = req.params; // matches middleware
+    const uid = req.user.uid;
+    if (req.user.role === "requester") {
+      const requestDoc = await db.collection("requests").findOne({_id: new ObjectId(requestId)});
+      if (requestDoc) {
+        if (requestDoc._id.toString !== uid) {
+          console.log("User is not allowed to get contracts for this request.");
+          return res.status(401).json({
+            success: false,
+            error: "User is not allowed to get contracts for this request.",
+          });
+        }
+      }
+      else {
+        console.log("Invalid request ID.")
+        return res.status(403).json({
+          success: false,
+          error: "Invalid request ID"
+        });
+      }
+      const contractDocs = (await db.collection("contracts").find({"client_optional_info.client_pid": new ObjectId(requestId) }).toArray()).map((doc) => doc._id);
+      if (contractDocs) {
+        return res.json({
+          success: true,
+          contractIds: contractDocs
+        });
+      }
+      else {
+        return res.status(404).json({
+          success: false,
+          error: "No contract found for this request ID."
+        });
+      }
     }
+    else if (req.user.role === "owner") {
+      const contractDoc = await db.collection("contracts").findOne({"client_optional_info.client_pid": new ObjectId(requestId), owner_user_id: new ObjectId(uid)});
+      if (contractDoc) {
+        return res.json({
+          success: true, 
+          contractId: contractDoc._id
+        });
+      }
+      else {
+        return res.status(404).json({
+          success: false,
+          error: "No contract found for this request and user pair."
+        });
+      }
+    }
+    else {
+      console.log("Invalid user role.");
+      return res.status(500).json({
+        success: false,
+        error: "Invalid user role."
+      });
+    }
+  }
 );
 
 // GET /api/requests/:requestId/GetContract/:contractId
@@ -352,39 +293,14 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const { requestId, contractId } = req.params;
+      console.log(`Request headers: ${JSON.stringify(req.headers)}`)
 
       // --- Fetch the request to verify existence and ownership ---
-      const requestSnap = await db.collection("requests").doc(requestId).get();
-      if (!requestSnap.exists) {
+      const requestData = await db.collection("requests").findOne({_id: {$eq: new ObjectId(requestId)}});
+      if (!requestData) {
         return res
           .status(404)
           .json({ success: false, error: "Request not found" });
-      }
-
-      // Optional: re-check ownership if middleware does not already enforce it
-      const requestData = requestSnap.data();
-      const userEmail = req.user?.email;
-      const ownerIds = [
-        ...(requestData?.ownersAccepted || []),
-        ...(requestData?.ownersPending || []),
-        ...(requestData?.ownersRejected || []),
-      ];
-      const requesterEmail =
-        requestData?.requesterEmail || requestData?.requester?.requesterEmail;
-      const requesterId =
-        requestData?.requesterId || requestData?.requester?.requesterId;
-      const ownsRequest =
-        (req.user?.role === "owner" &&
-          (ownerIds.includes(req.user?.uid) ||
-            requestData?.ownerEmails?.includes(userEmail))) ||
-        (req.user?.role === "requester" &&
-          (requesterId === req.user?.uid || requesterEmail === userEmail));
-
-      if (!ownsRequest) {
-        return res.status(403).json({
-          success: false,
-          error: "Not authorized to view this contract",
-        });
       }
 
       // --- Fetch the contract details from external API ---
@@ -397,12 +313,14 @@ router.get(
           method: "GET",
           headers: {
             "Content-Type": "application/json",
+            "Authorization": `Bearer ${req.headers["x-api-token"]}`
           },
         }
       );
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.log("Contract service URL is:",contractServiceUrl);
         return res.status(response.status).json({
           success: false,
           error: `External API error: ${errorText}`,
@@ -429,38 +347,49 @@ router.get(
       const { requestId, contractId } = req.params;
 
       // --- Fetch the request to verify existence and ownership ---
-      const requestSnap = await db.collection("requests").doc(requestId).get();
-      if (!requestSnap.exists) {
+      const requestData = await db.collection("requests").findOne({_id: {$eq: new ObjectId(requestId)}});
+      if (!requestData) {
         return res
           .status(404)
           .json({ success: false, error: "Request not found" });
       }
 
-      // Optional: re-check ownership if middleware does not already enforce it
-      const requestData = requestSnap.data();
-      const userEmail = req.user?.email;
-      const ownerIds = [
-        ...(requestData?.ownersAccepted || []),
-        ...(requestData?.ownersPending || []),
-        ...(requestData?.ownersRejected || []),
-      ];
-      const requesterEmail =
-        requestData?.requesterEmail || requestData?.requester?.requesterEmail;
-      const requesterId =
-        requestData?.requesterId || requestData?.requester?.requesterId;
-      const ownsRequest =
-        (req.user?.role === "owner" &&
-          (ownerIds.includes(req.user?.uid) ||
-            requestData?.ownerEmails?.includes(userEmail))) ||
-        (req.user?.role === "requester" &&
-          (requesterId === req.user?.uid || requesterEmail === userEmail));
+      // --- Download the contract from external API ---
+      const contractServiceUrl =
+        process.env.CONTRACT_SERVICE_URL ||
+        "https://dips.soton.ac.uk/contract-service-api";
+      const response = await fetch(
+        `${contractServiceUrl}/contract/download/${contractId}`,
+        {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${req.headers["x-api-token"]}`
+        },
+      });
 
-      if (!ownsRequest) {
-        return res.status(403).json({
+      if (!response.ok) {
+        const errorText = await response.text();
+        return res.status(response.status).json({
           success: false,
-          error: "Not authorized to download this contract",
+          error: `External API error: ${errorText}`,
         });
       }
+
+      const contractBuffer = await response.arrayBuffer();
+
+      // --- Send the file ---
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=contract_${contractId}.pdf`
+      );
+      res.setHeader("Content-Type", "application/pdf");
+      res.send(Buffer.from(contractBuffer));
+    } catch (err) {
+      console.error("Error downloading contract:", err);
+      res
+        .status(500)
+        .json({ success: false, error: "Failed to download contract" });
     }
 );
 

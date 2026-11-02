@@ -1,29 +1,42 @@
 import { useState } from "react";
+import { Ontology } from "../components/Interfaces/Ontology";
 
 // Interfaces
-export interface Refinement {
+export interface RefinementElement {
   id: number;
-  attribute?: string;
-  instance?: string;
-  value?: string;
+  leftOperand?: string;
+  operator?: string;
+  rightOperand?: string;
   label?: string;
 }
 // NOTE JS: Perhaps we should change the fields in Refinement to align with ODRL constraints.
 
-export interface Permission {
+export interface PermissionElement {
   id: number;
   dataset: string;
   action: string;
   purpose: string;
-  datasetRefinements: Refinement[];
-  purposeRefinements: Refinement[];
-  actionRefinements: Refinement[];
-  constraintRefinements: Refinement[];
+  datasetRefinements: RefinementElement[];
+  purposeRefinements: RefinementElement[];
+  actionRefinements: RefinementElement[];
+  constraintRefinements: RefinementElement[];
+}
+
+export interface RequestForm {
+  permissions: PermissionElement[];
+  selectedOntologies?: Ontology[];
+  requestName: string;
+  extraText: string;
+  requester?: {
+        requesterId: string;
+        requesterName: string;
+        requesterEmail: string;
+  };
 }
 
 // Custom Hook to manage permissions
 export const usePermissions = () => {
-  const [permissions, setPermissions] = useState<Permission[]>([
+  const [permissions, setPermissions] = useState<PermissionElement[]>([
     {
       id: Date.now(),
       dataset: "",
@@ -211,7 +224,7 @@ export const usePermissions = () => {
   const updateDatasetRefinement = (
     permissionId: number,
     refinementId: number,
-    field: keyof Refinement,
+    field: keyof RefinementElement,
     value: string
   ) => {
     setPermissions(
@@ -241,7 +254,7 @@ export const usePermissions = () => {
   const updateActionRefinement = (
     permissionId: number,
     refinementId: number,
-    field: keyof Refinement,
+    field: keyof RefinementElement,
     value: string
   ) => {
     setPermissions(
@@ -271,7 +284,7 @@ export const usePermissions = () => {
   const updatePurposeRefinement = (
     permissionId: number,
     refinementId: number,
-    field: keyof Refinement,
+    field: keyof RefinementElement,
     value: string
   ) => {
     setPermissions(
@@ -291,7 +304,7 @@ export const usePermissions = () => {
   const updateConstraintsRefinement = (
     permissionId: number,
     refinementId: number,
-    field: keyof Refinement,
+    field: keyof RefinementElement,
     value: string
   ) => {
     setPermissions(

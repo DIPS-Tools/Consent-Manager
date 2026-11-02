@@ -1,49 +1,51 @@
 // API service to interact with the Express backend
 
+import type { RequestForm } from "../helperFunctions/PermissionsUtils";
+
 // const API_BASE_URL =
   // import.meta.env.VITE_API_BASE_URL || "http://localhost:8019/api";
 const API_BASE_URL =
    import.meta.env.VITE_API_BASE_URL || "http://localhost:8019/api";
+
+console.log("typeof window:", typeof window);
+console.log("import.meta.env:", import.meta.env);
 
 //const API_BASE_URL =
   //import.meta.env.VITE_API_BASE_URL || "http://10.22.38.111:8019/api";
 
 interface ContractRequest {
   id: string; // required for contract creation
+  user?: any,
   policy?: any; // ODRL policy JSON
 }
 
-interface Refinement {
-  id: number;
-  attribute?: string;
-  instance?: string;
-  value?: string;
-  label?: string;
-}
-
-interface RequestData {
-  requestName: string;
-  description?: string;
-  extraTerms?: string;
-  permissions: {
-    dataset: string;
-    datasetRefinements: Refinement[];
-    purposeRefinements: Refinement[];
-    actionRefinements: Refinement[];
-    constraintRefinements: Refinement[];
-  }[];
-  selectedOntologies: {
-    id: string;
-    name: string;
-  }[];
-  requester: {
-    requesterId: string;
-    requesterName: string;
-    requesterEmail: string;
-  };
-  policy?: any; // ODRL policy JSON
-  metadata?: any; // Additional metadata like audit request ID
-}
+// function randomPassword(lower: number, upper: number, special: number, numeric: number) {
+//   let password = [];
+//   var chars = [
+//     "abcdefghijklmnopqrstuvwxyz",
+//     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+//     "!@#$%^&*()",
+//     "0123456789"
+//   ];
+//   for (let i = 0; i < lower; i++) {
+//     let randomIndex = Math.floor(Math.random()*chars[0].length);
+//     password.push(chars[0][randomIndex]);
+//   }
+//   for (let i = 0; i < upper; i++) {
+//     let randomIndex = Math.floor(Math.random()*chars[1].length);
+//     password.push(chars[1][randomIndex]);
+//   }
+//   for (let i = 0; i < special; i++) {
+//     let randomIndex = Math.floor(Math.random()*chars[2].length);
+//     password.push(chars[2][randomIndex]);
+//   }
+//   for (let i = 0; i < numeric; i++) {
+//     let randomIndex = Math.floor(Math.random()*chars[3].length);
+//     password.push(chars[3][randomIndex]);
+//   }
+//   password.sort(() => 0.5 - Math.random());
+//   return password.join("");
+// } 
 
 // Authentication API
 export const login = async (email: string, password: string) => {
@@ -63,6 +65,34 @@ export const login = async (email: string, password: string) => {
     }
 
     return await response.json();
+  } catch (error) {
+    console.error("Error logging in:", error);
+    throw error;
+  }
+};
+
+export const emailLogin = async (email: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-login-source": "ui",
+      },
+      credentials: "include",
+      body: JSON.stringify({ email, password: "Random_Password_For_Testing_13!" }),
+    });
+
+    const api_response = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return api_response;
   } catch (error) {
     console.error("Error logging in:", error);
     throw error;
@@ -96,6 +126,91 @@ export const register = async (userData: {
   }
 };
 
+export const updateUser = async (userData: {
+  email: string;
+  password: string;
+  name: string;
+  role: string;
+  [key: string]: any;
+}) => {
+  try {
+    
+    const response = await fetch(`${API_BASE_URL}/auth/update`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(userData),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error updating user:", error);
+    throw error;
+  }
+};
+
+export const deleteUser = async (userData: {
+  email: string;
+}) => {
+  try {
+    
+    const response = await fetch(`${API_BASE_URL}/auth/user/${userData.email}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error updating user:", error);
+    throw error;
+  }
+}
+
+export const registerTemporaryUser = async (userData: {
+  email: string;
+  name: string;
+  role: string;
+  [key: string]: any;
+}) => {
+  try {
+    const newUser = {...userData}
+    const response = await fetch(`${API_BASE_URL}/auth/create`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+      body: JSON.stringify(newUser),
+    });
+
+    const api_response = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return api_response;
+  } catch (error) {
+    console.error("Error registering:", error);
+    throw error;
+  }
+};
+
 export const logout = async () => {
   try {
     const response = await fetch(`${API_BASE_URL}/auth/logout`, {
@@ -113,20 +228,20 @@ export const logout = async () => {
   }
 };
 
-export const getUserDetails = async (uid: string) => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/auth/user/${uid}`);
+// export const getUserDetails = async (uid: string) => {
+//   try {
+//     const response = await fetch(`${API_BASE_URL}/auth/user/${uid}`);
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+//     if (!response.ok) {
+//       throw new Error(`HTTP error! status: ${response.status}`);
+//     }
 
-    return await response.json();
-  } catch (error) {
-    console.error("Error fetching user details:", error);
-    throw error;
-  }
-};
+//     return await response.json();
+//   } catch (error) {
+//     console.error("Error fetching user details:", error);
+//     throw error;
+//   }
+// };
 
 export const getAllOwners = async () => {
   try {
@@ -144,21 +259,27 @@ export const getAllOwners = async () => {
 };
 
 // Requests API
-export const createRequest = async (data: RequestData) => {
+export const createRequest = async (data: RequestForm) => {
   try {
     const response = await fetch(`${API_BASE_URL}/requests`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
       },
       body: JSON.stringify(data),
     });
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.error("Error creating request:", error);
     throw error;
@@ -167,13 +288,23 @@ export const createRequest = async (data: RequestData) => {
 
 export const getRequest = async (id: string) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/requests/${id}`);
+    const response = await fetch(`${API_BASE_URL}/requests/${id}`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+    });
+
+    const api_response = await response.json();
 
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.error("Error fetching request:", error);
     throw error;
@@ -186,6 +317,7 @@ export const updateRequest = async (id: string, data: any) => {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
       },
       body: JSON.stringify(data),
     });
@@ -201,6 +333,71 @@ export const updateRequest = async (id: string, data: any) => {
   }
 };
 
+export const acceptRequest = async (id: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/requests/${id}/accept`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error accepting request:", error);
+    throw error;
+  }
+};
+
+export const rejectRequest = async (id: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/requests/${id}/reject`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error rejecting request:", error);
+    throw error;
+  }
+};
+
+export const sendRequest = async (id: string, data: any) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/requests/${id}/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status});
+      }`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("Error sending request:", error);
+    throw error;
+  }
+}
+
 export const getRequests = async (
   filters: {
     uid?: string;
@@ -215,7 +412,12 @@ export const getRequests = async (
     });
 
     const response = await fetch(
-      `${API_BASE_URL}/requests?${params.toString()}`
+      `${API_BASE_URL}/requests?${params.toString()}`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+      }
     );
 
     if (!response.ok) {
@@ -314,7 +516,12 @@ export const deleteOntology = async (id: string, requesterUid: string) => {
 // Dashboard API
 export const getRequesterDashboard = async (uid: string) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/dashboard/requester/${uid}`);
+    const response = await fetch(`${API_BASE_URL}/dashboard/requester/${uid}`, {
+      method: "GET",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -329,7 +536,12 @@ export const getRequesterDashboard = async (uid: string) => {
 
 export const getOwnerDashboard = async (uid: string) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/dashboard/owner/${uid}`);
+    const response = await fetch(`${API_BASE_URL}/dashboard/owner/${uid}`, {
+      method: "GET",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -345,8 +557,13 @@ export const getOwnerDashboard = async (uid: string) => {
 export const getPendingRequestsForOwner = async (uid: string) => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/dashboard/requests/pending-owner/${uid}`
-    );
+      `${API_BASE_URL}/dashboard/requests/pending-owner/${uid}`, 
+    {
+      method: "GET",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -362,8 +579,13 @@ export const getPendingRequestsForOwner = async (uid: string) => {
 export const getApprovedRequestsForOwner = async (uid: string) => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/dashboard/requests/approved-owner/${uid}`
-    );
+      `${API_BASE_URL}/dashboard/requests/approved-owner/${uid}`,
+    {
+      method: "GET",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -380,13 +602,46 @@ export const deleteRequest = async (id: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/requests/${id}`, {
       method: "DELETE",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
     });
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
+  } catch (error) {
+    console.error("Error deleting request:", error);
+    throw error;
+  }
+};
+
+export const revokeRequest = async (id: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/requests/${id}/reject`, {
+      method: "POST",
+      headers: {
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+    });
+
+    const api_response = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return api_response;
   } catch (error) {
     console.error("Error deleting request:", error);
     throw error;
@@ -402,7 +657,7 @@ export const createNegotiationFromRequest = async (
 ) => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/external/negotiation/create-with-initial`,
+      `${API_BASE_URL}/negotiations/create-with-initial`,
       {
         method: "POST",
         headers: {
@@ -413,11 +668,16 @@ export const createNegotiationFromRequest = async (
       }
     );
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.log("request id: ", requestId);
     console.log("consumer id: ", consumerId);
@@ -438,7 +698,7 @@ export const createAcceptedNegotiationFromRequest = async (
 ) => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/external/negotiation/create-accepted`,
+      `${API_BASE_URL}/negotiations/create-accepted`,
       {
         method: "POST",
         headers: {
@@ -449,11 +709,16 @@ export const createAcceptedNegotiationFromRequest = async (
       }
     );
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.error("Error creating accepted negotiation:", error);
     throw error;
@@ -470,11 +735,16 @@ export const getExternalUsers = async (token: string) => {
       },
     });
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.error("Error fetching external users:", error);
     throw error;
@@ -498,11 +768,16 @@ export const getExternalUserDetails = async (
       },
     });
 
+    const api_response = await response.json();
+
     if (!response.ok) {
+      if (response.status === 401 && api_response.error === "TOKEN_EXPIRED") {
+        throw new Error("TOKEN_EXPIRED");
+      }
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    return api_response;
   } catch (error) {
     console.error("Error fetching external user details:", error);
     throw error;
@@ -513,7 +788,7 @@ export const getExternalUserDetails = async (
 export const getNegotiationByRequestId = async (requestId: string) => {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/external/negotiation/by-request/${requestId}`,
+      `${API_BASE_URL}/negotiations/by-request/${requestId}`,
       {
         method: "GET",
       }
@@ -546,7 +821,7 @@ export const redirectToNegotiationDisplay = async (
 
   // Build URL with authentication parameters
   const negotiationBaseUrl =
-    import.meta.env.VITE_NEGOTIATION_BASE_URL ||
+    import.meta.env.VITE_NEGOTIATION_FRONTEND_URL ||
     "https://dips.soton.ac.uk/negotiation/organization/negotiation";
   const negotiationUrl =
     `${negotiationBaseUrl}?` +
@@ -569,6 +844,85 @@ export const redirectToNegotiationDisplay = async (
     throw new Error("New tab blocked");
   }
 };
+
+export async function forgotPassword(email: string) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: email}),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to send email to reset password.");
+    }
+
+    return data;
+  }
+  catch (error) {
+    console.error("Error changing password:", error);
+    throw error;
+  }
+}
+
+export async function changePassword(password: string, token: string) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        new_password: password,
+        confirm_password: password,
+        token: token}),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to change password.");
+    }
+
+    return data;
+  }
+  catch (error) {
+    console.error("Error changing password:", error);
+    throw error;
+  }
+}
+
+export async function decodeToken(token: string) {
+  try {
+    console.log("Token received:", token);
+
+    const response = await fetch(
+      `${API_BASE_URL}/auth/${token}/createContract`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to create contract");
+    }
+
+    return data;
+  } catch (error) {
+    console.error("❌ Error creating contract:", error);
+    throw error;
+  }
+}
 
 export async function createContractAPI(request: ContractRequest) {
   try {
@@ -606,7 +960,9 @@ export async function createContractAPI(request: ContractRequest) {
           "Content-Type": "application/json",
           "x-api-token": token || "",
         },
-        body: JSON.stringify({ policy: request.policy }),
+        body: JSON.stringify({ 
+          user: userSummary,
+          policy: request.policy }),
       }
     );
 
@@ -622,3 +978,102 @@ export async function createContractAPI(request: ContractRequest) {
     throw error;
   }
 }
+
+export async function getContract(requestId: string) {
+  try {
+      const token = localStorage.getItem("token");
+      const API_BASE_URL =
+        import.meta.env.VITE_API_BASE_URL ||
+        "http://localhost:8019/api";
+      console.log("api base url is: ", API_BASE_URL);
+
+      const response = await fetch(
+        `${API_BASE_URL}/requests/${requestId}/contract`,
+        {
+          method: "GET",
+          headers: {
+            "x-api-token": token || "",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch contract ID: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const contractId = data.contractId;
+
+      const response2 = await fetch(
+        `${API_BASE_URL}/requests/${requestId}/GetContract/${contractId}`,
+        {
+          method: "GET",
+          headers: {
+            "x-api-token": token || "",
+          },
+        }
+      );
+
+      if (!response2.ok) {
+        throw new Error(`Failed to fetch contract: ${response.status}`);
+      }    
+      
+      return await response2.json();
+    } catch (err: any) {
+      console.error("Error fetching contract details:", err);
+    }
+  }
+
+  export async function downloadContract(requestId: string) {
+    try {
+      const token = localStorage.getItem("token");
+      const API_BASE_URL =
+        import.meta.env.VITE_API_BASE_URL ||
+        "http://localhost:8019/api";
+
+      const response = await fetch(
+        `${API_BASE_URL}/requests/${requestId}/contract`,
+        {
+          method: "GET",
+          headers: {
+            "x-api-token": token || "",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch contract ID: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const contractId = data.contractId;
+
+      const response2 = await fetch(
+        `${API_BASE_URL}/requests/${requestId}/downloadContract/${contractId}`,
+        {
+          method: "GET",
+          headers: {
+            "x-api-token": token || "",
+          },
+        }
+      );
+
+      if (!response2.ok) {
+        throw new Error(`Failed to download contract: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `contract_${contractId}.pdf`; // filename
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      console.log("Contract downloaded successfully.");
+    } catch (err) {
+      console.error("Error downloading contract:", err);
+    }
+  }

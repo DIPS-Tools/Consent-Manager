@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import dotenv from "dotenv";
 import swaggerUi from "swagger-ui-express";
 import fs from "fs";
 import path from "path";
@@ -13,11 +12,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const app = express();
-const PORT = process.env.PORT || 8019;
+const PORT = process.env.PORT || "8019";
 
 // Configure payload limits from environment variables
 const JSON_LIMIT = process.env.JSON_LIMIT || "10mb";
@@ -93,7 +91,7 @@ const swaggerDocument = YAML.parse(file);
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 // Health check endpoint
-app.get("/health", (req, res) => {
+app.get("/health", (_req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
@@ -104,9 +102,11 @@ import ontologiesRouter from "./routes/ontologies.js";
 import dashboardRouter from "./routes/dashboard.js";
 import externalApiRouter from "./routes/external-api.js";
 import contractRoutes from "./routes/contractRoutes.js";
+import negotiationRouter from "./routes/negotiations.js";
+// import emailRouter from "./routes/email.js";
 
 // API Routes
-app.use("/api", (req, res, next) => {
+app.use("/api", (req, _res, next) => {
   console.log(`API request: ${req.method} ${req.path}`);
   next();
 });
@@ -117,9 +117,11 @@ app.use("/api/ontologies", ontologiesRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/external", externalApiRouter);
 app.use("/api/requests", contractRoutes);
+app.use("/api/negotiations", negotiationRouter);
+// app.use("/api/email", emailRouter);
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(parseInt(PORT), '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Swagger docs: http://localhost:${PORT}/docs`);

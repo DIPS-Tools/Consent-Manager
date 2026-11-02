@@ -1,40 +1,23 @@
 import express from "express";
-import { collection, query, where, getDocs, Query } from "firebase/firestore";
-import { db } from "../config/firebase.js";
-import { permissionsToODRLPolicy } from "../../src/utils/policyParser.js";
+import { db } from "../config/database.service.ts";
+import { Collection, Document, ObjectId, WithId } from "mongodb";
+import { permissionsToODRLPolicy } from "../utils/policyParser.ts";
+import { verify } from "../config/keycloak.ts";
+import { RequestEmail, VerificationEmail } from "../../emails/templates/requestDetails";
+import { sendTestEmail } from "../config/nodemailer.ts";
+import { jwtVerify, SignJWT } from "jose";
+import { RequestData } from "../../src/components/Interfaces/Requests.ts";
+import { ODRLValidationResult } from "../../src/components/Interfaces/ODRL.ts";
+import crypto from "crypto";
 
 const router = express.Router();
+const secret = new TextEncoder().encode(process.env.EMAIL_LINK_SECRET!);
+const ODRL_VALIDATION_URL = process.env.ODRL_VALIDATION_URL || "https://dips.soton.ac.uk/odrl-engine/api"
 
-interface Refinement {
-  name: string;
-  value: string;
-}
-
-interface RequestData {
-  requestName: string;
-  description?: string;
-  extraTerms?: string;
-  extraText?: string;
-  permissions: {
-    dataset: string;
-    action: string;
-    purpose: string;
-    datasetRefinements: Refinement[];
-    purposeRefinements: Refinement[];
-    actionRefinements: Refinement[];
-    constraintRefinements: Refinement[];
-  }[];
-  selectedOntologies: {
-    id: string;
-    name: string;
-  }[];
-  requester?: {
-    requesterId: string;
-    requesterName: string;
-    requesterEmail: string;
-  };
-  policy?: any; // ODRL policy JSON
-  metadata?: any; // Additional metadata like audit request ID
+interface UserInputData {
+  email: string,
+  name?: string, 
+  id?: string 
 }
 
 // POST /api/requests - Create a new request
@@ -67,6 +50,31 @@ router.post("/", async (req, res) => {
       "December",
     ];
 
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+          return res.status(401).json({
+            success: false,
+            error: "Missing bearer token",
+          });
+        }
+    
+    const token = req.headers.authorization.substring(7);
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
     // If requester info is not provided in the request body,
     // you'll need to implement authentication middleware
     if (!data.requester) {
@@ -76,14 +84,61 @@ router.post("/", async (req, res) => {
       });
     }
 
-    let odrlPolicy = permissionsToODRLPolicy("", "", data.requester.requesterId, data.permissions);
+    let odrlPolicy = null;
+    if (data.policy) {
+      const validation_request_payload = {
+        'atomic_only': false,
+        'odrl': data.policy
+      };
+      const odrl_validation = await fetch(`${ODRL_VALIDATION_URL}/validate_ODRL`,
+        {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(validation_request_payload)
+        }
+      )
 
+      if (odrl_validation.ok) {
+        const odrl_validation_response = await odrl_validation.json() as ODRLValidationResult;
+        if (odrl_validation_response.result.is_valid_ODRL) {
+          console.log("ODRL is valid.");
+        }
+        else {
+          console.log("ODRL is not valid.");
+        }
+      }
+      else {
+        console.log("ODRL validation failed.");
+      }
+      odrlPolicy = data.policy;
+      // TODO: Verify if the policy is valid ODRL
+    }
+    else if (data.permissions) {
+      odrlPolicy = permissionsToODRLPolicy("", "", data.requester.requesterId, data.permissions);
+    }
+    else {
+      return res.status(400).json({
+        error: "Either an ODRL policy or permissions object is required.",
+        success: false,
+      });
+    }
+  
     const requestWithDefaults = {
-      ...data,
-      selectedOntologies: data.selectedOntologies.map(({ id, name }) => ({
-        id,
+      requestName: data.requestName,
+      description: data.description || "",
+      extraTerms: data.extraTerms || "",
+      extraText: data.extraText || "",
+      emailText: data.emailText || "",
+      permissions: data.permissions,
+      selectedOntologies: data.selectedOntologies? data.selectedOntologies.map(({ _id, name }) => ({
+        _id,
         name,
-      })),
+      })) : [],
+      requester: data.requester,
+      policy: odrlPolicy,
+      metadata: data.metadata || "",
       createdAt: `${days[now.getDay()]} ${now
         .getDate()
         .toString()
@@ -93,17 +148,16 @@ router.post("/", async (req, res) => {
         .padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`,
       sentAt: "",
       status: "draft",
-      policy: odrlPolicy,
       owners: [],
       ownersAccepted: [],
       ownersRejected: [],
       ownersPending: [],
     };
 
-    const docRef = await db.collection("requests").add(requestWithDefaults);
+    const docRef = await db.collection("requests").insertOne(requestWithDefaults);
 
     res.status(201).json({
-      id: docRef.id,
+      id: docRef.insertedId,
       success: true,
       message: "Request created successfully",
     });
@@ -120,27 +174,56 @@ router.post("/", async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    console.log("📥 GET /api/requests/:id called with id:", id);
-    const docRef = await db.collection("requests").doc(id).get();
+    console.log("GET /api/requests/:id called with id:", id);
 
-    if (!docRef.exists) {
-      console.error("❌ Request document NOT found for id:", id);
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+          return res.status(401).json({
+            success: false,
+            error: "Missing bearer token",
+          });
+        }
+    
+    const token = req.headers.authorization.substring(7);
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
+    const docRef = db.collection("requests");
+    const docSnap = await docRef.findOne({'_id':new ObjectId(id)}) as RequestData;
+
+    if (!docSnap) {
+      console.error("Request document NOT found for id:", id);
       return res.status(404).json({
         error: "Request not found",
         success: false,
       });
     }
 
-    const requestData = docRef.data();
-    console.log("📄 Request document found:", {
-      id: docRef.id,
-      requester: requestData?.requester,
-      requesterId: requestData?.requester?.requesterId,
-      requesterEmail: requestData?.requester?.requesterEmail,
-    });
+    if (verification.uid !== docSnap.requester?.requesterId && !docSnap.owners.some((owner) => owner === verification.uid)) {
+      console.error("Token owner is not allowed to retrieve this document.")
+      return res.status(401).json({
+        error: "Unauthorised",
+        success: false,
+      });
+    }
+
+    const requestData = docSnap;
 
     res.json({
-      id: docRef.id,
+      id: docSnap._id,
       data: requestData,
       success: true,
     });
@@ -157,21 +240,61 @@ router.get("/:id", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const {_id, owners, ownersPending, ownersAccepted, ownersRejected, requester, ...updateData} = req.body;
+
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+          return res.status(401).json({
+            success: false,
+            error: "Missing bearer token",
+          });
+        }
+    
+    const token = req.headers.authorization.substring(7);
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
 
     // Check if request exists
-    const docRef = db.collection("requests").doc(id);
-    const docSnap = await docRef.get();
+    const docRef = db.collection("requests");
+    const docSnap = await docRef.findOne({'_id':new ObjectId(id)});
 
-    if (!docSnap.exists) {
+    if (!docSnap) {
       return res.status(404).json({
         error: "Request not found",
         success: false,
       });
     }
 
-    // Update the request
-    await docRef.update(updateData);
+    if (verification.uid !== docSnap.requester?.requesterId) {
+      console.error("User is not allowed to update this document.")
+      return res.status(401).json({
+        error: "Unauthorised",
+        success: false,
+      });
+    }
+
+    if (docSnap.status !== "draft" || docSnap.owners.length > 0) {
+      console.error("Request has already been sent and can no longer be updated.")
+      return res.status(401).json({
+        error: "Unauthorised",
+        success: false,
+      });
+    }
+
+    await docRef.updateOne({'_id':new ObjectId(id)}, {$set: updateData});
 
     res.json({
       id,
@@ -187,28 +310,743 @@ router.put("/:id", async (req, res) => {
   }
 });
 
+//GET /api/requests/:id/accept/:uid Accept a request through an email link.
+router.get("/:id/accept/:token" , async (req, res) => {
+  try {
+    const { id, token } = req.params;
+    let verification = null;
+    let userId = null;
+
+    try {
+      const { payload } = await jwtVerify(token, secret);
+      if (!payload) {
+        return res.status(401).json({
+          error: "No payload after verification.",
+          success: false,
+        });
+      }
+      if (payload.requestId !== id) {
+        return res.status(403).json({
+          error: "Token request id mismatch.",
+          success: false,
+        });
+      }
+      if (!payload.userId) {
+        return res.status(403).json({
+          error: "User id missing from token.",
+          success: false,
+        });
+      }
+      verification = {_id: payload.userId, requestId: payload.requestId };
+      userId = payload.userId.toString();
+    }
+    catch (error) {
+      console.error("JWT verification failed");
+      console.error("name:", error instanceof Error ? error.name : "unknown");
+      console.error("message:", error instanceof Error ? error.message : error);
+      console.error("code:", (error as any)?.code);
+      console.error("error:", error);
+      return res.status(401).json({
+        error: `Unexpected error in verification.`,
+        success: false,
+      });
+    }  
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Verification failed.",
+        success: false,
+      });
+    }
+
+
+    // Check if request exists
+    const docRef = db.collection("requests");
+    const requestDoc = await docRef.findOne({'_id':new ObjectId(id)});
+
+    if (!requestDoc) {
+      return res.status(404).json({
+        error: "Request not found",
+        success: false,
+      });
+    }
+
+    let owners : Array<string> = requestDoc.owners;
+    let ownersPending : Array<string> = requestDoc.ownersPending;
+    let ownersAccepted : Array<string> = requestDoc.ownersAccepted;
+    let ownersRejected : Array<string> = requestDoc.ownersRejected;
+
+    const validOwner = owners.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerPending = ownersPending.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerAccepted = ownersAccepted.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerRejected = ownersRejected.some((owner: { toString: () => string; }) => owner === userId);
+
+    if (!validOwner || !ownerPending) {
+      console.log(`User not valid`);
+      return res
+        .status(403)
+        .json({ success: false, error: "User not pending" });
+    }
+
+    if (ownerAccepted || ownerRejected) { // This logic could change if we want to allow owners who rejected to then accept.
+      console.log(`User not pending`);
+      return res
+        .status(409)
+        .json({ success: false, error: "User not pending, or has already accepted or rejected" });
+    }
+
+    ownersPending = ownersPending.filter((owner) => owner !== userId);
+    ownersAccepted.push(userId);
+
+    const update = await docRef.updateOne({'_id': new ObjectId(id)}, {$set: {owners, ownersPending, ownersAccepted, ownersRejected}});
+
+    if (update){
+      return res.json({
+        id,
+        success: true,
+        message: "Request updated successfully",
+      });
+    }
+    else {
+      return res.status(500).json({
+        error: "Failed to update request",
+        success: false,
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating request:", error);
+    res.status(500).json({
+      error: "Failed to update request",
+      success: false,
+    });
+  }
+});
+
+//GET /api/requests/:id/reject/:uid Reject a request through an email link.
+router.get("/:id/reject/:token" , async (req, res) => {
+  try {
+    const { id, token } = req.params;
+    let verification = null;
+    let userId = null;
+
+    try {
+      const { payload } = await jwtVerify(token, secret);
+      if (!payload) {
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+      if (payload.requestId !== id) {
+        return res.status(403).json({
+          error: "Token request id mismatch.",
+          success: false,
+        });
+      }
+      if (!payload.userId) {
+        return res.status(403).json({
+          error: "User id missing from token.",
+          success: false,
+        });
+      }
+      verification = {_id: payload.userId, requestId: payload.requestId };
+      userId = payload.userId.toString();
+    }
+    catch (error) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+
+    // Check if request exists
+    const docRef = db.collection("requests");
+    const requestDoc = await docRef.findOne({'_id':new ObjectId(id)});
+
+    if (!requestDoc) {
+      return res.status(404).json({
+        error: "Request not found",
+        success: false,
+      });
+    }
+
+    let owners : Array<string> = requestDoc.owners;
+    let ownersPending : Array<string> = requestDoc.ownersPending;
+    let ownersAccepted : Array<string> = requestDoc.ownersAccepted;
+    let ownersRejected : Array<string> = requestDoc.ownersRejected;
+
+    const validOwner = owners.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerPending = ownersPending.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerAccepted = ownersAccepted.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerRejected = ownersRejected.some((owner: { toString: () => string; }) => owner === userId);
+
+    if (!validOwner || ownerRejected ) {
+      console.log(`User not found`);
+      return res
+        .status(403)
+        .json({ success: false, error: "User not associated with this request." });
+    }
+    else if (ownerRejected) {
+      return res
+      .status(409)
+      .json({ success: false, error: "User has already rejected this request."})
+    }
+
+    if (ownerPending || ownerAccepted) { //REJECT or REVOKE cases
+      ownersPending = ownersPending.filter((owner) => owner !== userId);
+      ownersAccepted = ownersAccepted.filter((owner) => owner !== userId);
+      ownersRejected.push(userId);
+    }
+    else {
+      return res
+      .status(500)
+      .json({ success: false, error: "Inconsistency error"})
+    }
+
+    const update = await docRef.updateOne({'_id': new ObjectId(id)}, {$set: {owners, ownersPending, ownersAccepted, ownersRejected}});
+
+    if (update){
+      return res.json({
+        id,
+        success: true,
+        message: "Request updated successfully",
+      });
+    }
+    else {
+      return res.status(500).json({
+        error: "Failed to update request",
+        success: false,
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating request:", error);
+    res.status(500).json({
+      error: "Failed to update request",
+      success: false,
+    });
+  }
+});
+
+//POST /api/requests/:id/accept - Accept a specific request
+router.post("/:id/accept", async (req, res) => {
+  try {
+    const { id } = req.params;
+    let token = null;
+    let user_email = null;
+
+    if (req.headers.authorization?.startsWith("Bearer ")) {
+      token = req.headers.authorization.substring(7);
+      const verification = await verify(token);
+
+      if (!verification?.success) {
+        if (verification?.reason === "Token expired") {
+          return res.status(401).json({
+            error: "TOKEN_EXPIRED",
+            success: false,
+          })
+        }
+        else{
+          return res.status(401).json({
+            error: "Invalid token",
+            success: false,
+          });
+        }
+      }
+
+      user_email = verification.email;
+    }
+    
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        error: "Missing bearer token",
+      });
+    }
+
+    const userDoc = await db.collection("users").findOne({'email': {$eq: user_email}});
+
+    if (!userDoc) {
+      return res.status(404).json({
+        error: "User not found",
+        success: false,
+      });
+    }
+    const userId = userDoc._id.toString();
+
+    // Check if request exists
+    const docRef = db.collection("requests");
+    const requestDoc = await docRef.findOne({'_id':new ObjectId(id)});
+
+    if (!requestDoc) {
+      return res.status(404).json({
+        error: "Request not found",
+        success: false,
+      });
+    }
+
+    let owners : Array<string> = requestDoc.owners;
+    let ownersPending : Array<string> = requestDoc.ownersPending;
+    let ownersAccepted : Array<string> = requestDoc.ownersAccepted;
+    let ownersRejected : Array<string> = requestDoc.ownersRejected;
+
+    const validOwner = owners.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerPending = ownersPending.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerAccepted = ownersAccepted.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerRejected = ownersRejected.some((owner: { toString: () => string; }) => owner === userId);
+
+    if (!validOwner || !ownerPending) {
+      console.log(`User not valid`);
+      return res
+        .status(403)
+        .json({ success: false, error: "User not pending" });
+    }
+
+    if (ownerAccepted || ownerRejected) { // This logic could change if we want to allow owners who rejected to then accept.
+      console.log(`User not pending`);
+      return res
+        .status(409)
+        .json({ success: false, error: "User not pending, or has already accepted or rejected" });
+    }
+
+    ownersPending = ownersPending.filter((owner) => owner !== userId);
+    ownersAccepted.push(userId);
+
+    const update = await docRef.updateOne({'_id': new ObjectId(id)}, {$set: {owners, ownersPending, ownersAccepted, ownersRejected}});
+
+    if (update){
+      return res.json({
+        id,
+        success: true,
+        message: "Request updated successfully",
+      });
+    }
+    else {
+      return res.status(500).json({
+        error: "Failed to update request",
+        success: false,
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating request:", error);
+    res.status(500).json({
+      error: "Failed to update request",
+      success: false,
+    });
+  }
+});
+
+//POST /api/requests/:id/reject - Reject a specific request
+router.post("/:id/reject", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        error: "Missing bearer token",
+      });
+    }
+
+    const token = req.headers.authorization.substring(7);
+
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
+    const userDoc = await db.collection("users").findOne({'email': {$eq: verification.email}});
+
+    if (!userDoc) {
+      return res.status(404).json({
+        error: "User not found",
+        success: false,
+      });
+    }
+    const userId = userDoc._id.toString();
+
+    // Check if request exists
+    const docRef = db.collection("requests");
+    const requestDoc = await docRef.findOne({'_id':new ObjectId(id)});
+
+    if (!requestDoc) {
+      return res.status(404).json({
+        error: "Request not found",
+        success: false,
+      });
+    }
+
+    let owners : Array<string> = requestDoc.owners;
+    let ownersPending : Array<string> = requestDoc.ownersPending;
+    let ownersAccepted : Array<string> = requestDoc.ownersAccepted;
+    let ownersRejected : Array<string> = requestDoc.ownersRejected;
+
+    const validOwner = owners.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerPending = ownersPending.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerAccepted = ownersAccepted.some((owner: { toString: () => string; }) => owner === userId);
+    const ownerRejected = ownersRejected.some((owner: { toString: () => string; }) => owner === userId);
+
+    if (!validOwner || ownerRejected ) {
+      console.log(`User not found`);
+      return res
+        .status(403)
+        .json({ success: false, error: "User not associated with this request." });
+    }
+    else if (ownerRejected) {
+      return res
+      .status(409)
+      .json({ success: false, error: "User has already rejected this request."})
+    }
+
+    if (ownerPending || ownerAccepted) { //REJECT or REVOKE cases
+      ownersPending = ownersPending.filter((owner) => owner !== userId);
+      ownersAccepted = ownersAccepted.filter((owner) => owner !== userId);
+      ownersRejected.push(userId);
+    }
+    else {
+      return res
+      .status(500)
+      .json({ success: false, error: "Inconsistency error"})
+    }
+
+    const update = await docRef.updateOne({'_id': new ObjectId(id)}, {$set: {owners, ownersPending, ownersAccepted, ownersRejected}});
+
+    if (update){
+      return res.json({
+        id,
+        success: true,
+        message: "Request rejected successfully",
+      });
+    }
+    else {
+      return res.status(500).json({
+        error: "Failed to update request",
+        success: false,
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating request:", error);
+    res.status(500).json({
+      error: "Failed to update request",
+      success: false,
+    });
+  }
+});
+
+//POST /api/requests/:id/send - Send a request to users
+router.post("/:id/send", async (req, res) => {
+  try {
+    const { id } = req.params;
+    let userDocs: WithId<Document>[] | null = [];
+    let test_email_urls = [];
+    let unregisteredOwners: UserInputData[] = []
+    let lang = req.body.language || "en";
+    const email_sender = process.env.DEFAULT_EMAIL_SENDER || "DIPS Consent Manager <dips-consent-manager@soton.ac.uk>";
+
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      console.error("Missing bearer token.")
+      return res.status(401).json({
+        success: false,
+        error: "Missing bearer token",
+      });
+    }
+
+    if (req.body.ownersPending) {
+      const ownersPendingIds = req.body.ownersPending.map((o : string) => new ObjectId(o));
+      userDocs = await db.collection("users").find({_id: {$in: ownersPendingIds}}).toArray();
+    }
+    if (req.body.user_details) {
+      const user_details = req.body.user_details;
+      console.log(`User details: ${user_details}`);
+      const user_emails = user_details.map((user: UserInputData) => user.email.toLowerCase());
+      userDocs = userDocs.concat(await db.collection("users").find({'email': {$in: user_emails}}).toArray());
+      unregisteredOwners = userDocs && userDocs.length > 0 ? user_details.filter((o: UserInputData) => !userDocs?.some((doc) => doc.email === o.email)) : user_details;
+    }
+    if (!req.body.ownersPending && !req.body.user_details) {
+      console.error("Request body has no owners pending or user emails.")
+      return res.status(400).json({
+        success: false,
+        error: "Bad request",
+      });
+    }
+
+    const token = req.headers.authorization.substring(7);
+
+    const verification = await verify(token);
+    console.log("verification is:",verification);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
+    if (verification.type !== "consumer") {
+      return res.status(403).json({
+        error: "User is not a requester",
+        success: false,
+      });
+    }
+
+    if (!userDocs) {
+      console.error("User not found.")
+      return res.status(404).json({
+        error: "User not found",
+        success: false,
+      });
+    }
+
+    const requestDoc = await db.collection<RequestData>("requests").findOne({_id: {$eq: new ObjectId(id)}}) as RequestData;
+    
+    if (!requestDoc) {
+      return res.status(404).json({
+        error: "Request not found",
+        success: false,
+      });
+    }
+
+    let owners : Array<string> = requestDoc.owners;
+    let ownersPending : Array<string> = requestDoc.ownersPending;
+    let ownersAccepted : Array<string> = requestDoc.ownersAccepted;
+    let ownersRejected : Array<string> = requestDoc.ownersRejected;
+
+    console.log(`User docs: ${userDocs}`);
+    console.log(`Unregistered owners: ${unregisteredOwners}`);
+
+    for (const userDoc of userDocs) {
+      const userId = userDoc._id.toString();
+
+      const validOwner = owners.some((owner: { toString: () => string; }) => owner === userId);
+      const ownerPending = ownersPending.some((owner: { toString: () => string; }) => owner === userId);
+      const ownerAccepted = ownersAccepted.some((owner: { toString: () => string; }) => owner === userId);
+      const ownerRejected = ownersRejected.some((owner: { toString: () => string; }) => owner === userId);
+
+      if (validOwner) {
+        console.log(`User ${userId} already a valid owner. Skipping`);
+        continue;
+      }
+      else if (ownerPending) {
+        console.log(`User ${userId} already pending. Skipping`);
+        continue;
+      }
+      else if (ownerAccepted) {
+        console.log(`User ${userId} already accepted this request. Skipping`);
+        continue;
+      }
+      else if (ownerRejected) {
+        console.log(`User ${userId} already rejected this request. Skipping`);
+        continue;
+      }
+      else {
+        console.log(`Attempting to send email to user ${userId}`);
+        const random_token = crypto.randomBytes(32).toString("hex");
+        const token_payload = {
+          owner: {'id': userId, 'name': userDoc.name, 'email': userDoc.email} as UserInputData,
+          requestId: id,
+          language: lang,
+          action: "confirm",
+          token: random_token,
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          used: false
+        }
+        const email_token = await new SignJWT(token_payload)
+          .setProtectedHeader({alg: "HS256"})
+          .sign(secret);
+
+        const insert_token = await db.collection("tokens").insertOne(token_payload);
+
+        console.log(`Email token for registered user: ${email_token}`);
+
+        if (insert_token) {
+          const email_content = RequestEmail(requestDoc, email_token, lang);
+
+          const email_details = {
+              from: email_sender,
+              to: userDoc.email,
+              subject: 'Consent Request',
+              html: email_content,
+            }
+          const email_result = await sendTestEmail(email_details);
+          test_email_urls.push(email_result.url);
+          owners.push(userId);
+          ownersPending.push(userId);
+        }
+        else{
+          console.log("Unable to insert new token.");
+        }
+      }
+    }
+
+    for (const owner of unregisteredOwners) {
+      const userDoc = await db.collection("users").findOne({'email': {$eq: owner.email}});
+      if (userDoc) {
+        console.log(`Email address already registered to user ${userDoc._id}`);
+        continue;
+      }
+      else {
+        console.log(`Attempting to send email to ${owner}`);
+        const random_token = crypto.randomBytes(32).toString("hex");
+        const token_payload = {
+          owner: owner,
+          requestId: id,
+          language: lang,
+          action: "confirm",
+          token: random_token,
+          createdAt: new Date(),
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          used: false
+        }
+        const email_token = await new SignJWT(token_payload)
+          .setProtectedHeader({alg: "HS256"})
+          .sign(secret);
+
+        const insert_token = await db.collection("tokens").insertOne(token_payload);
+        
+        if (insert_token) {
+          const email_content = VerificationEmail(requestDoc, email_token, lang);
+
+          const email_details = {
+              from: email_sender,
+              to: owner.email,
+              subject: 'Consent Request',
+              html: email_content,
+            }
+          const email_result = await sendTestEmail(email_details);
+          test_email_urls.push(email_result.url);
+        }
+        else{
+          console.log("Unable to insert new token.");
+        }
+      }
+    }
+
+    const update = await db.collection("requests").updateOne({'_id': new ObjectId(id)}, {$set: {status: "sent", owners, ownersPending, ownersAccepted, ownersRejected}});
+
+    if (update){
+      return res.json({
+        id,
+        success: true,
+        message: "Request sent successfully",
+        test_email_urls
+      });
+    }
+    else {
+      return res.status(500).json({
+        error: "Failed to update request",
+        success: false,
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating request:", error);
+    res.status(500).json({
+      error: "Failed to update request",
+      success: false,
+    });
+  }
+});
+
 // GET /api/requests - Get requests with filters
 router.get("/", async (req, res) => {
   try {
     const { uid, role, status } = req.query;
 
-    let requestsQuery: FirebaseFirestore.Query = db.collection("requests");
+    console.log("Request is:",`${uid}, ${role}`);
+
+    let requestsCollection: Collection = db.collection("requests");
+    let requestsQuery = {};
+
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      console.error("Missing bearer token.")
+      return res.status(401).json({
+        success: false,
+        error: "Missing bearer token",
+      });
+    }
+
+    const token = req.headers.authorization.substring(7);
+
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
+    if (verification.uid !== uid) {
+      console.error("Invalid token.")
+      return res.status(401).json({
+        error: "Token not valid for this user.",
+        success: false,
+      });
+    }
+
+    const consent_role = verification.type === "provider" ? "owner" : "requester";
+
+    if (consent_role !== role) {
+      console.error(`Token role and given role mismatch: got ${role} expected ${consent_role}`);
+      return res.status(401).json({
+        error: "Token role and given role mismatch.",
+        success: false,
+      });
+    }
 
     if (uid && role === "requester") {
-      requestsQuery = requestsQuery.where("requester.requesterId", "==", uid);
+      //requestsQuery = requestsQuery.find("requester.requesterId", "==", uid);
+      requestsQuery = { 'requester.requesterId': {$eq: uid}}
     }
     if (uid && role === "owner") {
-      requestsQuery = requestsQuery.where("owners", "array-contains", uid);
+      //requestsQuery = requestsQuery.where("owners", "array-contains", uid);
+      requestsQuery = { 'owners': {$in: [uid]}}
     }
     if (status) {
-      requestsQuery = requestsQuery.where("status", "==", status);
+      //requestsQuery = requestsQuery.where("status", "==", status);
+      requestsQuery = { 'status': {$eq: status}}
     }
 
-    const querySnapshot = await requestsQuery.get();
-    const requests = querySnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
+    const querySnapshot = requestsCollection.find(requestsQuery);
+    const requests = await querySnapshot.toArray();
 
     res.json({ requests, success: true });
   } catch (error) {
@@ -222,19 +1060,53 @@ router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Check if request exists
-    const docRef = db.collection("requests").doc(id);
-    const docSnap = await docRef.get();
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      console.error("Missing bearer token.")
+      return res.status(401).json({
+        success: false,
+        error: "Missing bearer token",
+      });
+    }
 
-    if (!docSnap.exists) {
+    const token = req.headers.authorization.substring(7);
+
+    const verification = await verify(token);
+
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
+    }
+
+    // Check if request exists
+    const docRef = db.collection("requests");
+    const docSnap = await docRef.findOne({'_id':new ObjectId(id)}) as RequestData;
+
+    if (!docSnap) {
       return res.status(404).json({
         error: "Request not found",
         success: false,
       });
     }
 
+    if (docSnap.requester?.requesterId !== verification.uid) {
+      return res.status(403).json({
+        error: "Request does not belong to this user.",
+        success: false,
+      });
+    }
+
     // Delete the request
-    await docRef.delete();
+    await docRef.deleteOne({'_id':new ObjectId(id)})
 
     res.json({
       success: true,

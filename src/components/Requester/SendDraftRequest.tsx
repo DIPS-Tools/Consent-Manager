@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getRequest, updateRequest, getAllOwners } from "../../services/api";
+import { getRequest, getAllOwners, sendRequest } from "../../services/api";
 import styles from "../../css/Ontology.module.css";
+import { useTranslation } from "react-i18next";
 
 function SendDraftRequest() {
   const { requestId } = useParams();
@@ -21,6 +22,7 @@ function SendDraftRequest() {
     { email: string; id: string; name?: string }[]
   >([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const { t } = useTranslation();
 
   const now = new Date();
   const days = [
@@ -46,6 +48,38 @@ function SendDraftRequest() {
     "November",
     "December",
   ];
+
+// Source - https://stackoverflow.com/a/46181
+// Posted by John Rutherford, modified by community. See post 'Timeline' for change history
+// Retrieved 2026-03-20, License - CC BY-SA 4.0
+
+const validateEmail = (email: string) => {
+  return String(email)
+    .toLowerCase()
+    .match(
+      /^(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|.(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/
+    );
+};
+
+  // const sendEmailToUnregisteredUser = (email: string) => {
+  //   const actionCodeSettings = {
+  //     // URL you want to redirect back to. The domain (www.example.com) for this
+  //     // URL must be in the authorized domains list in the Firebase Console.
+  //     url: "https://dips.soton.ac.uk/consent-manager/login",
+  //     // This must be true.
+  //     handleCodeInApp: true,
+  //     iOS: {
+  //       bundleId: 'com.example.ios'
+  //     },
+  //     android: {
+  //       packageName: 'com.example.android',
+  //       installApp: true,
+  //       minimumVersion: '12'
+  //     },
+  //     // The domain must be configured in Firebase Hosting and owned by the project.
+  //     linkDomain: 'custom-domain.com'
+  //   };
+  // }
 
   // Get owner details by ID
   const getOwnerById = (ownerId: string) => {
@@ -174,31 +208,76 @@ function SendDraftRequest() {
     setShowDropdown(false);
   };
 
+  const addOwner = (owner: {
+    email: string;
+    id: string;
+    name?: string;
+  }) => {
+    if (validateEmail(owner.email)){
+      if (selectedOwners.concat(allOwners).some((prev) => prev.email === owner.email)) {
+        alert(t("existing_owner_warning"));
+      }
+      else {
+        setSelectedOwners((prev) => [...prev, owner]);
+      }
+      setEmailInput("");
+      setFilteredOwners([]);
+      setShowDropdown(false);
+    }
+    else{
+      alert(t("invalid_email_warning"));
+      return;
+    }
+  };
+
+  const handleRenameOwner = (value: string, email: string) => {
+    setSelectedOwners(selectedOwners.map((owner) => owner.email === email ? {...owner, name: value} : owner));
+  };
+
   const removeOwner = (email: string) => {
     setSelectedOwners(selectedOwners.filter((o) => o.email !== email));
   };
 
   const handleSendRequest = async () => {
     if (selectedOwners.length === 0) {
-      alert("Please add at least one valid owner.");
+      alert(t("send_request_warning_1"));
       return;
     }
 
     if (!requestId) {
-      alert("Request ID is missing.");
+      alert(t("request_id_missing"));
       return;
     }
 
     setLoading(true);
 
     try {
-      const newOwnerIds = selectedOwners.map((o) => o.id);
+      const newOwnerIds = selectedOwners.filter((o) => o.id != "").map((o) => o.id);
+      const unregisteredOwners = selectedOwners.filter((o) => o.id === "").map((o) => ({name: o.name || "Unknown", email: o.email}));
 
       console.log("=== BEFORE SENDING ===");
       console.log("Current owners state:", owners);
       console.log("Current ownersPending state:", ownersPending);
       console.log("New owner IDs to add:", newOwnerIds);
+      console.log("Unregistered users:", unregisteredOwners);
 
+      //TODO: Register new users for each unregistered user.
+      // for (let owner of unregisteredOwners) {
+      //   let tempResponse = await registerTemporaryUser(
+      //     {
+      //       email: owner.email,
+      //       name: "default",
+      //       role: "owner",
+      //       emailVerified: false
+      //     }
+      //   );
+      //   if (tempResponse.success && tempResponse.user.uid) {
+      //     newOwnerIds.push(tempResponse.user.uid);
+      //   }
+      //   else {
+      //     console.error("Unable to register email: ", owner.email);
+      //   }
+      // }
       // Combine existing owners with new owners (avoid duplicates)
       const allOwnerIds = [...new Set([...owners, ...newOwnerIds])];
       const allPendingIds = [...new Set([...ownersPending, ...newOwnerIds])];
@@ -210,6 +289,8 @@ function SendDraftRequest() {
       const updatePayload = {
         owners: allOwnerIds,
         ownersPending: allPendingIds,
+        user_details: unregisteredOwners,
+        language: localStorage.getItem("language") || "en",
         status: "sent",
         sentAt: `${days[now.getDay()]} ${now
           .getDate()
@@ -227,14 +308,14 @@ function SendDraftRequest() {
       console.log("consumer dashboard", updatePayload);
       console.log("======================");
 
-      const result = await updateRequest(requestId, updatePayload);
+      const result = await sendRequest(requestId, updatePayload);
 
       console.log("=== UPDATE RESULT ===");
       console.log(result);
       console.log("====================");
 
       if (result.success) {
-        alert("Request sent successfully!");
+        alert(t("request_sent_successfully"));
         // Clear selected owners after sending
         setSelectedOwners([]);
 
@@ -254,15 +335,17 @@ function SendDraftRequest() {
           setOwnersAccepted(requestData.ownersAccepted || []);
           setOwnersRejected(requestData.ownersRejected || []);
         }
+        
         console.log("======================");
       } else {
-        alert("Error sending request. Please try again.");
+        alert(t("error_sending_request"));
       }
     } catch (error) {
       console.error("Error sending request:", error);
       alert("Error sending request. Please try again.");
     } finally {
       setLoading(false);
+      location.reload();
     }
   };
 
@@ -277,20 +360,20 @@ function SendDraftRequest() {
         <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
       </Link>
 
-      <h3 className="mt-4">Send Request</h3>
-      <p>Submit requests to data owners for review and action.</p>
+      <h3 className="mt-4">{t("send_request")}</h3>
+      <p>{t("send_request_desc")}</p>
       <hr />
 
       {/* Show already sent requests */}
       {sentOwners.length > 0 && (
         <div className="mb-4">
-          <h5>Already sent to</h5>
+          <h5>{t("already_sent_to")}</h5>
           <table className="table table-bordered table-sm">
             <thead>
               <tr>
-                <th className="px-2">Name</th>
-                <th className="px-2">Email</th>
-                <th className="px-2">Status</th>
+                <th className="px-2">{t("name")}</th>
+                <th className="px-2">{t("email")}</th>
+                <th className="px-2">{t("status")}</th>
               </tr>
             </thead>
             <tbody>
@@ -300,14 +383,14 @@ function SendDraftRequest() {
                   <td className="px-2">{owner.email}</td>
                   <td className="px-2">
                     {owner.status === "Accepted" && (
-                      <span className="badge bg-success">Accepted</span>
+                      <span className="badge bg-success">{t("accepted")}</span>
                     )}
                     {owner.status === "Rejected" && (
-                      <span className="badge bg-danger">Rejected</span>
+                      <span className="badge bg-danger">{t("rejected")}</span>
                     )}
                     {owner.status === "Pending" && (
                       <span className="badge bg-warning text-dark">
-                        Pending
+                        {t("pending")}
                       </span>
                     )}
                   </td>
@@ -321,9 +404,9 @@ function SendDraftRequest() {
       <form className="w-50" onSubmit={(e) => e.preventDefault()}>
         <div className="mb-3">
           <label className={`${styles.formLabel} form-label`}>
-            Add New Recipients
+            {t("add_new_recipients")}
           </label>
-          <div className="position-relative">
+          <div className="position-relative w-75" style={{display: "inline-block"}}>
             <input
               type="text"
               className={`${styles.formInput} form-control`}
@@ -332,7 +415,7 @@ function SendDraftRequest() {
               onFocus={() =>
                 emailInput && setShowDropdown(filteredOwners.length > 0)
               }
-              placeholder="Type name or email to search..."
+              placeholder={t("type_name_email_to_search")}
             />
 
             {/* Dropdown for autocomplete */}
@@ -354,33 +437,50 @@ function SendDraftRequest() {
                       (e.currentTarget.style.backgroundColor = "white")
                     }
                   >
-                    <strong>{owner.name || "Unknown"}</strong> &lt;{owner.email}
+                    <strong>{owner.name || t("unknown")}</strong> &lt;{owner.email}
                     &gt;
                   </div>
                 ))}
               </div>
             )}
           </div>
+          <div className="position-relative w-25" style={{display: "inline-block"}}>
+            <button
+              type="button"
+              className="btn btn-sm text-center"
+              onClick={() => addOwner({email: emailInput, id: ""})}
+            >
+              <i className="fa-solid fa-plus"></i>
+            </button>
+          </div>
 
           {selectedOwners.length > 0 && (
             <div className="mt-3">
               <p className="mb-2">
                 <strong>
-                  New Recipients to Add ({selectedOwners.length}):
+                  {t("new_recipients_to_add")} ({selectedOwners.length}):
                 </strong>
               </p>
               <table className="table table-bordered table-sm">
                 <thead>
                   <tr>
-                    <th className="px-2">Name</th>
-                    <th className="px-2">Email</th>
-                    <th className="px-2">Remove</th>
+                    <th className="px-2">{t("name")}</th>
+                    <th className="px-2">{t("email")}</th>
+                    <th className="px-2">{t("remove")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {selectedOwners.map((owner) => (
                     <tr key={owner.email}>
-                      <td className="px-2">{owner.name || "Unknown"}</td>
+                      <td className="px-2">{ 
+                        <input
+                          type="text"
+                          value={owner.name}
+                          disabled={!!owner.id} 
+                          className={`${styles.formInput} form-control`}
+                          onChange={(e) => handleRenameOwner(e.target.value, owner.email)}
+                          placeholder={t("unknown")}
+                        />}</td>
                       <td className="px-2">{owner.email}</td>
                       <td className="text-center">
                         <button
@@ -401,21 +501,17 @@ function SendDraftRequest() {
       </form>
 
       <div className="alert alert-warning" role="alert">
-        <strong>Note:</strong> If you search for someone and they don't appear,
-        it means you've already sent this request to them.
+        <strong>{t("note")}:</strong> {t("sending_a_request_alert")}
       </div>
 
-      <h5 className="mt-4">Sending a request</h5>
+      <h5 className="mt-4">{t("sending_a_request")}</h5>
       <p>
-        The recipient's email is required. If they don't have an account in the
-        system, they will be notified by email. However, they must create an
-        account to view your request and take action.
+        {t("sending_a_request_msg")}
       </p>
 
-      <h5 className="mt-4">What happens next?</h5>
+      <h5 className="mt-4">{t("what_happens_next")}</h5>
       <p>
-        Once the request is sent, the recipient will be notified. Please note
-        that it may take some time for them to get back to you with a decision.
+        {t("what_happens_next_desc")}
       </p>
 
       <div className="mt-4">
@@ -424,7 +520,7 @@ function SendDraftRequest() {
           onClick={handleSendRequest}
           disabled={loading || selectedOwners.length === 0}
         >
-          {loading ? "Sending..." : `Send Request`}
+          {loading ? `${t("sending")}...` : t("send_request")}
         </button>
       </div>
     </div>

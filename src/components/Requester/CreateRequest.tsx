@@ -13,22 +13,26 @@ import {
   fetchOntologies,
   Ontology,
   Option,
+  loadGraph,
 } from "../../helperFunctions/RequestDropdowns";
 
 // permissions utils
 import { usePermissions } from "../../helperFunctions/PermissionsUtils";
+import { renderPermissionsPreview } from "../../utils/renderPermissions";
+import { useTranslation } from "react-i18next";
 
 function CreateRequest() {
   const navigate = useNavigate(); // Initialize navigate
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
 
   // steps
   const [step, setStep] = useState(0);
   const nextStep = () => setStep((s) => s + 1);
   const prevStep = () => setStep((s) => s - 1);
-  const stepTitles = ["Ontologies Selection", "Permissions", "Review & Submit"];
+  const stepTitles = [t("ontologies_selection"), t("permissions"), t("review_and_submit")];
 
-  // onotlogies
+  // ontologies
   const [ontologies, setOntologies] = useState<Ontology[]>([]);
   const [selectedOntologies, setSelectedOntologies] = useState<Ontology[]>([]);
 
@@ -37,6 +41,7 @@ function CreateRequest() {
   const [formData, setFormData] = useState({
     requestName: "",
     extraText: "",
+    emailText: "",
   });
 
   const [actionOptions, setActionOptions] = useState<Option[]>([]);
@@ -45,6 +50,7 @@ function CreateRequest() {
   const [purposeRefinementsOptions, setPurposeRefinementsOptions] = useState<Option[]>([]);
   const [datasetRefinementsOptions, setDatasetRefinementsOptions] = useState<Option[]>([]);
   const [generalRefinementsOptions, setGeneralRefinementsOptions] = useState<Option[]>([]);
+  const [labels, setLabels] = useState<Option[]>([]);
 
   useEffect(() => {
     const loadOntologies = async () => {
@@ -57,9 +63,9 @@ function CreateRequest() {
         const data = await fetchOntologies(user.uid);
         setOntologies(data);
 
-        const defaultOntology = data.find((o) => o.id === "default");
+        const defaultOntology = data.filter((o) => o.isDefault === true);
         if (defaultOntology) {
-          setSelectedOntologies([defaultOntology]);
+          setSelectedOntologies(defaultOntology);
         }
       } catch (err: any) {
         setError(err.message);
@@ -73,19 +79,21 @@ function CreateRequest() {
   useEffect(() => {
     console.log("Loading actions and purposes for ontologies.");
     const loadDropdownValues = async () => {
+      const store = await loadGraph(selectedOntologies);
       const actions = await getFeatureDropdownValue(
-        selectedOntologies,
+        store,
         "action"
       );
       const purposes = await getFeatureDropdownValue(
-        selectedOntologies,
+        store,
         "purpose"
       );
       // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
-      const actionRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const purposeRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const datasetRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const generalRefinements = await getAttributeDropdownValue(selectedOntologies);
+      const actionRefinements = await getAttributeDropdownValue(store);
+      const purposeRefinements = actionRefinements;
+      const datasetRefinements = actionRefinements;
+      const generalRefinements = actionRefinements;
+      const labels = actions.concat(purposes).concat(actionRefinements);
 
       setActionOptions(actions);
       setPurposeOptions(purposes);
@@ -93,22 +101,23 @@ function CreateRequest() {
       setPurposeRefinementsOptions(purposeRefinements);
       setDatasetRefinementsOptions(datasetRefinements);
       setGeneralRefinementsOptions(generalRefinements);
+      setLabels(labels);
     };
-
+    
     loadDropdownValues();
-  }, [selectedOntologies]);
+  }, [selectedOntologies, i18n.language]);
 
   const handleDoubleClick = (id: string) => {
-    const existing = selectedOntologies.find((o) => o.id === id);
+    const existing = selectedOntologies.find((o) => o._id === id);
     if (existing) return;
-    const ontology = ontologies.find((o) => o.id === id);
+    const ontology = ontologies.find((o) => o._id === id);
     if (ontology) {
       setSelectedOntologies([...selectedOntologies, ontology]);
     }
   };
 
   const removeOntology = (id: string) => {
-    setSelectedOntologies(selectedOntologies.filter((o) => o.id !== id));
+    setSelectedOntologies(selectedOntologies.filter((o) => o._id !== id));
   };
 
   const handleChange = (
@@ -122,7 +131,7 @@ function CreateRequest() {
     e.preventDefault();
     
     if (!user) {
-      alert("User not authenticated");
+      alert(t("user_not_authenticated"));
       return;
     }
 
@@ -135,7 +144,7 @@ function CreateRequest() {
     if (result.success) {
       navigate("/requesterBase/RequesterRequests");
     } else {
-      alert("Error creating request");
+      alert(t("error_creating_request"));
     }
   };
 
@@ -160,11 +169,15 @@ function CreateRequest() {
     updateConstraintsRefinement,
   } = usePermissions();
 
+  //TODO: Make sure any constraints are filled.
   const allFieldsFilled = permissions.every(
     (permission) =>
       permission.dataset.trim() !== "" &&
       permission.action.trim() !== "" &&
-      permission.purpose.trim() !== ""
+      permission.purpose.trim() !== "" &&
+      (permission.actionRefinements.length === 0 || permission.actionRefinements.every((constraint) => constraint.leftOperand && constraint.operator && constraint.rightOperand)) &&
+      (permission.purposeRefinements.length === 0 || permission.purposeRefinements.every((constraint) => constraint.leftOperand && constraint.operator && constraint.rightOperand)) &&
+      (permission.datasetRefinements.length === 0 || permission.datasetRefinements.every((constraint) => constraint.leftOperand && constraint.operator && constraint.rightOperand))
   );
 
   return (
@@ -174,11 +187,11 @@ function CreateRequest() {
         to="/requesterBase/requesterRequests"
         role="button"
       >
-        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
       </Link>
 
-      <h3 className="mt-4">Create request</h3>
-      <p>Create a new request by specifying the necessary details.</p>
+      <h3 className="mt-4">{t("create_request")[0] + t("create_request").slice(1).toLowerCase()}</h3>
+      <p>{t("create_new_request_text")}</p>
 
       <hr />
 
@@ -223,7 +236,7 @@ function CreateRequest() {
           <>
             <div className="mb-3">
               <label className={`${styles.formLabel} form-label`}>
-                Request name
+                {t("request_name")}
               </label>
               <input
                 name="requestName"
@@ -237,7 +250,7 @@ function CreateRequest() {
             </div>
             <div className="mb-3">
               <label className={`${styles.formLabel} form-label`}>
-                Additional Terms (Optional)
+                {t("additional_terms")} ({t("optional")})
               </label>
               <textarea
                 name="extraText"
@@ -246,12 +259,26 @@ function CreateRequest() {
                 id="extraText"
                 onChange={handleChange}
                 rows={4}
-                placeholder="Enter any additional terms or requirements for this consent request..."
+                placeholder={t("additional_terms_placeholder")}
               />
             </div>
             <div className="mb-3">
               <label className={`${styles.formLabel} form-label`}>
-                Ontologies
+                {t("email_text")} ({t("optional")})
+              </label>
+              <textarea
+                name="emailText"
+                value={formData.emailText}
+                className={`${styles.formInput} form-control`}
+                id="emailText"
+                onChange={handleChange}
+                rows={4}
+                placeholder={t("email_text_placeholder")}
+              />
+            </div>
+            <div className="mb-3">
+              <label className={`${styles.formLabel} form-label`}>
+                {t("ontologies")}
               </label>
 
               <select
@@ -262,16 +289,16 @@ function CreateRequest() {
                 disabled={ontologies.length === 0}
               >
                 {ontologies.length === 0 ? (
-                  <option disabled>Loading custom ontologies...</option>
+                  <option disabled>{t("loading_custom_ontologies")}</option>
                 ) : (
                   <>
                     <option className="mb-2" disabled selected>
-                      Double-click to select
+                      {t("double_click_to_select")}
                     </option>
                     {ontologies
-                      .filter((ontology) => ontology.id !== "default")
-                      .map(({ id, name }) => (
-                        <option key={id} value={id}>
+                      .filter((ontology) => !ontology.isDefault)
+                      .map(({ _id, name }) => (
+                        <option key={_id} value={_id}>
                           {name}
                         </option>
                       ))}
@@ -280,10 +307,10 @@ function CreateRequest() {
               </select>
 
               <div style={{ marginTop: "1rem" }}>
-                {selectedOntologies.map(({ id, name }) =>
-                  id === "default" ? (
+                {selectedOntologies.map(({ _id, name, isDefault }) =>
+                  isDefault ? (
                     <span
-                      key={id}
+                      key={_id}
                       className="border bg-light px-2 py-1 me-2 text-muted"
                       style={{ cursor: "not-allowed" }}
                     >
@@ -291,10 +318,10 @@ function CreateRequest() {
                     </span>
                   ) : (
                     <span
-                      key={id}
+                      key={_id}
                       className="border px-2 py-1 me-2"
                       style={{ cursor: "pointer" }}
-                      onClick={() => removeOntology(id)}
+                      onClick={() => removeOntology(_id)}
                     >
                       {name} <span style={{ marginLeft: 5 }}>&times;</span>
                     </span>
@@ -303,16 +330,14 @@ function CreateRequest() {
               </div>
 
               <div className="alert alert-warning mt-3" role="alert">
-                Select one or more ontologies. If the ontology you're looking
-                for isn't listed,{" "}
+                {t("selected_ontologies_text_1")}{" "}
                 <Link
                   to="/requesterBase/ontologies"
                   className="text-decoration-underline"
                 >
-                  go to the Ontologies page
+                  {t("selected_ontologies_text_2")}
                 </Link>{" "}
-                to upload it. The default ontology will always be used, even if
-                you don't select any ontologies.
+                {t("selected_ontologies_text_3")}
               </div>
 
               {/* <div style={{ marginTop: "2rem" }}>
@@ -334,7 +359,7 @@ function CreateRequest() {
               onClick={nextStep}
               disabled={!formData.requestName.trim()}
             >
-              Next
+              {t("next")}
             </button>
           </>
         )}
@@ -348,7 +373,7 @@ function CreateRequest() {
                 <div className="border p-4">
                   <div className="d-flex mb-2">
                     <div className="me-auto">
-                      <h5>Permission {index + 1}</h5>
+                      <h5>{t("permission")} {index + 1}</h5>
                     </div>
                     <div>
                       {/* Remove permission button (disables for the first permission) */}
@@ -359,7 +384,7 @@ function CreateRequest() {
                           type="button"
                           onClick={() => removePermission(permission.id)}
                         >
-                          Delete permission
+                          {t("delete_permission")}
                         </a>
                       )}
                     </div>
@@ -367,7 +392,7 @@ function CreateRequest() {
 
                   <div className="mb-3">
                     <label className={`${styles.formLabel} form-label`}>
-                      Dataset
+                      {t("dataset")}
                     </label>
                     <input
                       value={permission.dataset}
@@ -376,7 +401,7 @@ function CreateRequest() {
                       }
                       type="text"
                       className={`${styles.formInput} form-control`}
-                      placeholder="Dataset URL"
+                      placeholder={t("dataset_url")}
                       required
                     />
                   </div>
@@ -385,7 +410,7 @@ function CreateRequest() {
                   {permission.datasetRefinements.map((item) => (
                     <div className="row mt-2 mb-3" key={item.id}>
                       <div className="d-flex mb-3 mt-3">
-                        <h6 className="me-auto">Dataset Refinement</h6>
+                        <h6 className="me-auto">{t("dataset_refinement")}</h6>
                         <i
                           className="fa-solid fa-trash"
                           onClick={() =>
@@ -396,16 +421,16 @@ function CreateRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Attribute
+                          {t("left_operand")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={item.attribute || ""}
+                          value={item.leftOperand || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               item.id,
-                              "attribute",
+                              "leftOperand",
                               e.target.value
                             )
                           }
@@ -420,22 +445,22 @@ function CreateRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Instance
+                          {t("operator")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={item.instance || ""}
+                          value={item.operator || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               item.id,
-                              "instance",
+                              "operator",
                               e.target.value
                             )
                           }
                           required
                         >
-                          {getOperandDropdownValue().map((option) => (
+                          {getOperandDropdownValue(t).map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>
@@ -445,17 +470,17 @@ function CreateRequest() {
 
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Value
+                          {t("right_operand")}
                         </label>
                         <input
                           type="text"
                           className={`${styles.formInput} form-control`}
-                          value={item.value || ""}
+                          value={item.rightOperand || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               item.id,
-                              "value",
+                              "rightOperand",
                               e.target.value
                             )
                           }
@@ -470,7 +495,7 @@ function CreateRequest() {
                     className={`${styles.secondaryButton} btn btn-sm mt-3`}
                     disabled={!permission.dataset} // Disable button if dataset URL is empty
                   >
-                    Add dataset refinement
+                    {t("add_dataset_refinement")}
                   </button>
 
                   <div className="row mt-4">
@@ -478,7 +503,7 @@ function CreateRequest() {
                       {/* Action Select */}
                       <div className="mb-3">
                         <label className={`${styles.formLabel} form-label`}>
-                          Action
+                          {t("action")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
@@ -489,6 +514,7 @@ function CreateRequest() {
                           }
                           required
                         >
+                          <option disabled selected> -- {t("select_an_action")} -- </option>
                           {/* Ontology-based options */}
                           {actionOptions.map((opt) => (
                             <option key={opt.value} value={opt.value}>
@@ -502,7 +528,7 @@ function CreateRequest() {
                       {permission.actionRefinements.map((item) => (
                         <div className="row mt-2 mb-3" key={item.id}>
                           <div className="d-flex mb-3 mt-3">
-                            <h6 className="me-auto">Action Refinement</h6>
+                            <h6 className="me-auto">{t("action_refinement")}</h6>
                             <i
                               className="fa-solid fa-trash"
                               onClick={() =>
@@ -513,16 +539,16 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Attribute
+                              {t("left_operand")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={item.attribute || ""}
+                              value={item.leftOperand || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   item.id,
-                                  "attribute",
+                                  "leftOperand",
                                   e.target.value
                                 )
                               }
@@ -537,22 +563,22 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Instance
+                              {t("operator")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={item.instance || ""}
+                              value={item.operator || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   item.id,
-                                  "instance",
+                                  "operator",
                                   e.target.value
                                 )
                               }
                               required
                             >
-                              {getOperandDropdownValue().map((option) => (
+                              {getOperandDropdownValue(t).map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
@@ -561,15 +587,15 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Value
+                              {t("right_operand")}
                             </label>
                             <input
-                              value={item.value || ""}
+                              value={item.rightOperand || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   item.id,
-                                  "value",
+                                  "rightOperand",
                                   e.target.value
                                 )
                               }
@@ -586,7 +612,7 @@ function CreateRequest() {
                         className={`${styles.secondaryButton} btn btn-sm mt-3`}
                         disabled={!permission.action} // Disable button if no action is selected
                       >
-                        Add action refinement
+                        {t("add_action_refinement")}
                       </button>
                     </div>
 
@@ -594,7 +620,7 @@ function CreateRequest() {
                       {/* Purpose Select */}
                       <div className="mb-3">
                         <label className={`${styles.formLabel} form-label`}>
-                          Purpose
+                          {t("purpose")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
@@ -605,6 +631,7 @@ function CreateRequest() {
                           }
                           required
                         >
+                          <option disabled selected> -- {t("select_a_purpose")} -- </option>
                           {/* Ontology-based options */}
                           {purposeOptions.map((opt) => (
                             <option key={opt.value} value={opt.value}>
@@ -618,7 +645,7 @@ function CreateRequest() {
                       {permission.purposeRefinements.map((item) => (
                         <div className="row mt-2 mb-3" key={item.id}>
                           <div className="d-flex mb-3 mt-3">
-                            <h6 className="me-auto">Purpose Refinement</h6>
+                            <h6 className="me-auto">{t("purpose_refinement")}</h6>
                             <i
                               className="fa-solid fa-trash"
                               onClick={() =>
@@ -629,16 +656,16 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Attribute
+                              {t("left_operand")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={item.attribute || ""}
+                              value={item.leftOperand || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   item.id,
-                                  "attribute",
+                                  "leftOperand",
                                   e.target.value
                                 )
                               }
@@ -653,22 +680,22 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Instance
+                              {t("operator")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={item.instance || ""}
+                              value={item.operator || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   item.id,
-                                  "instance",
+                                  "operator",
                                   e.target.value
                                 )
                               }
                               required
                             >
-                              {getOperandDropdownValue().map((option) => (
+                              {getOperandDropdownValue(t).map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
@@ -677,17 +704,17 @@ function CreateRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Value
+                              {t("right_operand")}
                             </label>
                             <input
                               type="text"
                               className={`${styles.formInput} form-control`}
-                              value={item.value || ""}
+                              value={item.rightOperand || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   item.id,
-                                  "value",
+                                  "rightOperand",
                                   e.target.value
                                 )
                               }
@@ -702,7 +729,7 @@ function CreateRequest() {
                         className={`${styles.secondaryButton} btn btn-sm mt-3`}
                         disabled={!permission.purpose} // Disable button if no action is selected
                       >
-                        Add purpose refinement
+                        {t("add_purpose_refinement")}
                       </button>
                     </div>
                   </div>
@@ -722,16 +749,16 @@ function CreateRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Attribute
+                          {t("left_operand")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={item.attribute || ""}
+                          value={item.leftOperand || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               item.id,
-                              "attribute",
+                              "leftOperand",
                               e.target.value
                             )
                           }
@@ -746,22 +773,22 @@ function CreateRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Instance
+                          {t("operator")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={item.instance || ""}
+                          value={item.operator || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               item.id,
-                              "instance",
+                              "operator",
                               e.target.value
                             )
                           }
                           required
                         >
-                          {getOperandDropdownValue().map((option) => (
+                          {getOperandDropdownValue(t).map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>
@@ -770,17 +797,17 @@ function CreateRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Value
+                          {t("right_operand")}
                         </label>
                         <input
                           type="text"
                           className={`${styles.formInput} form-control`}
-                          value={item.value || ""}
+                          value={item.rightOperand || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               item.id,
-                              "value",
+                              "rightOperand",
                               e.target.value
                             )
                           }
@@ -794,7 +821,7 @@ function CreateRequest() {
                     onClick={() => addConstraintRefinement(permission.id)}
                     className={`${styles.dashedButton} btn btn-sm w-100 mt-4`}
                   >
-                    Add constraint
+                    {t("add_constraint")}
                   </button>
                 </div>
               </div>
@@ -804,7 +831,7 @@ function CreateRequest() {
               onClick={addPermission}
               className={`${styles.secondaryButton} btn w-100`}
             >
-              Add Permission
+              {t("add_permission")}
             </button>
 
             <button
@@ -812,7 +839,7 @@ function CreateRequest() {
               className={`${styles.secondaryButton} btn mt-3 w-20`}
               onClick={prevStep}
             >
-              Previous
+              {t("previous")}
             </button>
             <button
               type="button"
@@ -820,7 +847,7 @@ function CreateRequest() {
               onClick={nextStep}
               disabled={!allFieldsFilled}
             >
-              Next
+              {t("next")}
             </button>
           </>
         )}
@@ -828,25 +855,28 @@ function CreateRequest() {
         {/* Step 3 */}
         {step === 2 && (
           <>
+            {renderPermissionsPreview({
+              ...formData,
+              selectedOntologies,
+              permissions,
+            }, t, labels)}
             <p className="text-muted mt-4">
-              Bofore you create your request please make sure that all your
-              permissions and refinements are correct. Wrong values can lead to
-              rejection by the data owner. <br />
-              <br /> If you're not sure please contact the data owner or see our{" "}
-              <a href="#">Guidline seciton</a>.
+              {t("create_request_text_1")} <br />
+              <br /> {t("create_request_text_2")}{" "}
+              <a href="#">{t("guideline_section")}</a>.
             </p>
             <button
               type="button"
               className={`${styles.secondaryButton} btn mt-3 w-20`}
               onClick={prevStep}
             >
-              Previous
+              {t("previous")}
             </button>
             <button
               className={`${styles.primaryButton} btn mt-3 w-20 ms-2`}
               type="submit"
             >
-              Create Request
+              {t("create_request")}
             </button>
           </>
         )}

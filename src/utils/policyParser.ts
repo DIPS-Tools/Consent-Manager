@@ -1,106 +1,8 @@
 // Generic ODRL policy parser for consent management
+import { ODRLPermission, ODRLPolicy } from "../components/Interfaces/ODRL";
+import { Permission } from "../components/Interfaces/Requests";
 
-interface PolicyPermission {
-  dataset: string;
-  action: string;
-  purpose: string;
-  datasetRefinements: any[];
-  actionRefinements: any[];
-  purposeRefinements: any[];
-  constraintRefinements: any[];
-  constraints?: Array<{
-    leftOperand: string;
-    operator: string;
-    rightOperand: any;
-    description: string;
-  }>;
-  assignees?: Array<{
-    source: string;
-    refinements?: Array<{
-      leftOperand: string;
-      operator: string;
-      rightOperand: any;
-      description: string;
-    }>;
-  }>;
-}
-
-interface ODRLPermission {
-  "odrl:action": {
-    "rdf:value": {
-      "@id": string;
-    };
-    "odrl:refinement"?: {
-      "odrl:leftOperand": {
-        "@id": string;
-      };
-      "odrl:operator": {
-        "@id": string;
-      };
-      "odrl:rightOperand": string[];
-    }[];
-  };
-  "odrl:target": {
-    "odrl:source": {
-      "@id": string;
-    };
-    "odrl:refinement"?: {
-      "odrl:leftOperand": {
-        "@id": string;
-      };
-      "odrl:operator": {
-        "@id": string;
-      };
-      "odrl:rightOperand": string[];
-    }[];
-  };
-  "odrl:assignee"?: {
-    "odrl:source": {
-      "@id": string;
-    };
-    "odrl:refinement"?: {
-      "odrl:leftOperand": {
-        "@id": string;
-      };
-      "odrl:operator": {
-        "@id": string;
-      };
-      "odrl:rightOperand": string[];
-    };
-  };
-  "odrl:assigner"?: {
-    "odrl:source": {
-      "@id": string;
-    };
-    "odrl:refinement"?: {
-      "odrl:leftOperand": {
-        "@id": string;
-      };
-      "odrl:operator": {
-        "@id": string;
-      };
-      "odrl:rightOperand": string[];
-    };
-  };
-  "odrl:constraint"?: Array<{
-    "odrl:leftOperand": {
-      "@id": string;
-    };
-    "odrl:operator": {
-      "@id": string;
-    };
-    "odrl:rightOperand": any;
-  }>;
-}
-
-interface ODRLPolicy {
-  "@context": any;
-  "@id": string;
-  "@type": string;
-  "odrl:permission": ODRLPermission[];
-}
-
-export function permissionsToODRLPolicy(requestId: string, ownerId: string, requesterId: string, request: PolicyPermission[]) {
+export function permissionsToODRLPolicy(requestId: string, ownerId: string, requesterId: string, request: Permission[]) {
   let odrlPolicy : ODRLPolicy = {
     "@context": {
       "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
@@ -121,31 +23,31 @@ export function permissionsToODRLPolicy(requestId: string, ownerId: string, requ
                       "odrl:refinement": permission.actionRefinements.map(
                         (refinement) =>
                         { const constraint = {
-                          "odrl:leftOperand": {"@id": refinement.attribute},
-                          "odrl:operator": {"@id": refinement.instance},
-                          "odrl:rightOperand": refinement.value
+                          "odrl:leftOperand": {"@id": refinement.leftOperand},
+                          "odrl:operator": {"@id": refinement.operator},
+                          "odrl:rightOperand": refinement.rightOperand
                         }
                         return constraint
                         }
                       )},
-      "odrl:target": {"odrl:source": {"@id": permission.dataset},
+      "odrl:target": {"odrl:source": permission.dataset,
                       "odrl:refinement": permission.datasetRefinements.map(
                         (refinement) =>
                         { const constraint = {
-                          "odrl:leftOperand": {"@id": refinement.attribute},
-                          "odrl:operator": {"@id": refinement.instance},
-                          "odrl:rightOperand": refinement.value
+                          "odrl:leftOperand": {"@id": refinement.leftOperand},
+                          "odrl:operator": {"@id": refinement.operator},
+                          "odrl:rightOperand": refinement.rightOperand
                         }
                         return constraint
                         }
                       )},
-      "odrl:assignee": {"odrl:source": {"@id": requesterId}},
-      "odrl:assigner": {"odrl:source": {"@id": ownerId}},
+      "odrl:assignee": {"odrl:source": requesterId},
+      "odrl:assigner": {"odrl:source": ownerId},
       "odrl:constraint": constraints.map(constraint => {
         return {
-        "odrl:leftOperand": {"@id": constraint.attribute},
-        "odrl:operator": {"@id": constraint.attribute},
-        "odrl:rightOperand": constraint.value
+        "odrl:leftOperand": {"@id": constraint.leftOperand},
+        "odrl:operator": {"@id": constraint.operator},
+        "odrl:rightOperand": constraint.rightOperand
       }})
     }
     temp_permission["odrl:constraint"].push({
@@ -165,7 +67,8 @@ export function extractReadableName(id: string): string {
   if (!id) return "Unknown";
 
   // Remove common prefixes
-  let name = id.replace(/^(https?:\/\/[^\/]+\/[^\/]*\/|[a-zA-Z]+:|id:)/, "");
+  // let name = id.replace(/^(https?:\/\/[^\/]+\/[^\/]*\/|[a-zA-Z]+:|id:)/, "");
+  let name = id.replace(/^(https?:\/\/[^\/]+(?:\/[^\/]+)*\/(?:[^\/]+#)?|[a-zA-Z]+:|id:)/, "");
 
   // Convert underscores to spaces, but be careful with camelCase
   name = name.replace(/_/g, " ");
@@ -178,6 +81,29 @@ export function extractReadableName(id: string): string {
 
   // Capitalize first letter of each word
   return name.replace(/\b\w/g, (l) => l.toUpperCase());
+}
+
+export function extractReadableOperator(id: string): string {
+  const operators = [
+    { value: "", label: "Choose an operator" },
+    { value: "odrl:eq", label: "equals" },
+    { value: "odrl:gt", label: "gt" },
+    { value: "odrl:gteq", label: "geq" },
+    { value: "odrl:hasPart", label: "hasPart" },
+    { value: "odrl:isA", label: "isA" },
+    { value: "odrl:isAllOf", label: "isAllOf" },
+    { value: "odrl:isAnyOf", label: "isAnyOf" },
+    { value: "odrl:isNoneOf", label: "isNoneOf" },
+    { value: "odrl:isPartOf", label: "isPartOf" },
+    { value: "odrl:lt", label: "lt" },
+    { value: "odrl:lteq", label: "leq" },
+    { value: "odrl:neq", label: "neq" },
+  ];
+
+    const operator_string = operators.filter(element => element.value === id);
+
+    if (operator_string[0]) return operator_string[0].label
+    else return id;
 }
 
 /**
@@ -194,9 +120,11 @@ export function parseConstraints(
   if (!constraints) return [];
 
   return constraints.map((constraint) => {
-    const leftOperand = constraint["odrl:leftOperand"]?.["@id"] || "Unknown";
-    const operator = constraint["odrl:operator"]?.["@id"] || "Unknown";
+    const leftOperand = typeof constraint["odrl:leftOperand"] === "string" ? constraint["odrl:leftOperand"] : constraint["odrl:leftOperand"]?.["@id"] || "Unknown";
+    const operator = typeof constraint["odrl:operator"] === "string" ? constraint["odrl:operator"] : constraint["odrl:operator"]?.["@id"] || "Unknown";
     const rightOperand = constraint["odrl:rightOperand"];
+    const normalisedOperator = extractReadableOperator(operator);
+    let normalisedRightOperand = rightOperand;
 
     // Create human-readable description
     let description = `${extractReadableName(
@@ -210,6 +138,7 @@ export function parseConstraints(
         if (typeof r === "object" && r["@value"]) return r["@value"];
         return String(r);
       });
+      normalisedRightOperand = values;
       description += ` ${values.join(", ")}`;
     } else if (typeof rightOperand === "object") {
       // Handle @list structure
@@ -220,20 +149,24 @@ export function parseConstraints(
           if (typeof r === "object" && r["@value"]) return r["@value"];
           return String(r);
         });
+        normalisedRightOperand = values;
         description += ` ${values.join(", ")}`;
       } else if (rightOperand["@id"]) {
-        description += ` ${extractReadableName(rightOperand["@id"])}`;
+        normalisedRightOperand = extractReadableName(rightOperand["@id"]);
+        description += ` ${normalisedRightOperand}`;
       } else if (rightOperand["@value"]) {
-        description += ` ${rightOperand["@value"]}`;
+        normalisedRightOperand = rightOperand["@value"];
+        description += ` ${normalisedRightOperand}`;
       } else {
-        description += ` ${JSON.stringify(rightOperand)}`;
+        normalisedRightOperand = JSON.stringify(rightOperand);
+        description += ` ${normalisedRightOperand}`;
       }
     }
 
     return {
-      leftOperand: extractReadableName(leftOperand),
-      operator: extractReadableName(operator),
-      rightOperand,
+      leftOperand,
+      operator: normalisedOperator,
+      rightOperand: normalisedRightOperand,
       description,
     };
   });
@@ -255,7 +188,11 @@ export function parseAssignees(
 }> {
   if (!assignee) return [];
 
-  const source = assignee["odrl:source"]?.["@id"] || "Unknown";
+  else if (typeof assignee === "string") {
+    return [{source: assignee}];
+  }
+
+  const source = assignee["odrl:source"] || "Unknown";
 
   const result = {
     source: extractReadableName(source),
@@ -264,8 +201,8 @@ export function parseAssignees(
 
   if (assignee["odrl:refinement"]) {
     const refinement = assignee["odrl:refinement"];
-    const leftOperand = refinement["odrl:leftOperand"]?.["@id"] || "Unknown";
-    const operator = refinement["odrl:operator"]?.["@id"] || "Unknown";
+    const leftOperand = typeof refinement["odrl:leftOperand"] === "string" ? refinement["odrl:leftOperand"] : refinement["odrl:leftOperand"]?.["@id"] || "Unknown";
+    const operator = typeof refinement["odrl:operator"] === "string" ? refinement["odrl:operator"] : refinement["odrl:operator"]?.["@id"] || "Unknown";
     const rightOperand = refinement["odrl:rightOperand"];
 
     let description = `${extractReadableName(
@@ -280,8 +217,8 @@ export function parseAssignees(
 
     result.refinements = [
       {
-        leftOperand: extractReadableName(leftOperand),
-        operator: extractReadableName(operator),
+        leftOperand,
+        operator,
         rightOperand,
         description,
       },
@@ -294,22 +231,21 @@ export function parseAssignees(
 /**
  * Convert ODRL policy to permission format for display (generic approach)
  */
-export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
+export function parseODRLPolicy(policy: ODRLPolicy | null): Permission[] {
   if (!policy || !policy["odrl:permission"]) {
     return [];
   }
 
   return policy["odrl:permission"].map((permission) => {
     // Extract basic permission components generically
-    const action = extractReadableName(
-      permission["odrl:action"]["rdf:value"]["@id"]
-    );
-    const dataset = extractReadableName(
-      permission["odrl:target"]["odrl:source"]["@id"]
-    );
+    const action = typeof permission["odrl:action"] === "string" ? permission["odrl:action"] : permission["odrl:action"]["rdf:value"]["@id"];
+    const dataset = typeof permission["odrl:target"] === "string" ? permission["odrl:target"] : permission["odrl:target"]["odrl:source"];
 
-    // Parse constraints generically
-    const constraints = parseConstraints(permission["odrl:constraint"]);
+    const actionRefinements = typeof permission["odrl:action"] === "string" ? [] : parseConstraints(permission["odrl:action"]["odrl:refinement"]);
+    const datasetRefinements = typeof permission["odrl:target"] === "string" ? [] : parseConstraints(permission["odrl:target"]["odrl:refinement"]);
+
+    // Parse constraints generically (excluding purpose)
+    const constraints = parseConstraints(permission["odrl:constraint"]).filter((o) => !o.leftOperand.toLowerCase().includes("purpose"));
 
     // Parse assignees generically
     const assignees = parseAssignees(permission["odrl:assignee"]);
@@ -317,8 +253,7 @@ export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
     // Extract purpose from constraints (look for Purpose-related constraints)
     const purposeConstraints = constraints.filter(
       (c) =>
-        c.leftOperand.toLowerCase().includes("purpose") &&
-        c.operator.toLowerCase().includes("any")
+        c.leftOperand.toLowerCase().includes("purpose")
     );
 
     let purpose = "General use";
@@ -332,7 +267,7 @@ export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
             return rightOp["@list"]
               .map((p: any) => {
                 if (typeof p === "object" && p["@id"])
-                  return extractReadableName(p["@id"]);
+                  return p["@id"];
                 if (typeof p === "object" && p["@value"]) return p["@value"];
                 return String(p);
               })
@@ -344,7 +279,7 @@ export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
             return rightOp
               .map((p) => {
                 if (typeof p === "object" && p["@id"])
-                  return extractReadableName(p["@id"]);
+                  return p["@id"];
                 if (typeof p === "object" && p["@value"]) return p["@value"];
                 return String(p);
               })
@@ -353,7 +288,7 @@ export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
 
           // Handle single object with @id
           if (typeof rightOp === "object" && rightOp["@id"]) {
-            return extractReadableName(rightOp["@id"]);
+            return rightOp["@id"];
           }
 
           // Handle single object with @value
@@ -372,8 +307,8 @@ export function parseODRLPolicy(policy: ODRLPolicy | null): PolicyPermission[] {
       dataset,
       action,
       purpose,
-      datasetRefinements: [],
-      actionRefinements: [],
+      datasetRefinements: datasetRefinements || [],
+      actionRefinements: actionRefinements || [],
       purposeRefinements: [],
       constraintRefinements: [],
       constraints, // Generic constraint info
@@ -396,7 +331,7 @@ export function hasODRLPolicy(request: any): boolean {
 /**
  * Get permissions from either ODRL policy or legacy permissions array
  */
-export function getRequestPermissions(request: any): PolicyPermission[] {
+export function getRequestPermissions(request: any): Permission[] {
   // If request has ODRL policy, parse it
   if (hasODRLPolicy(request)) {
     return parseODRLPolicy(request.policy);

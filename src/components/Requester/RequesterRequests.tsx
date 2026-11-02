@@ -6,6 +6,7 @@ import { useAuth } from "../../AuthContext";
 
 // components
 import LoadingSpinner from "../LoadingSpinner";
+import { useTranslation } from "react-i18next";
 
 function RequesterRequests() {
   const { user } = useAuth();
@@ -15,6 +16,7 @@ function RequesterRequests() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
   const [requestToDelete, setRequestToDelete] = useState<string | null>(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
     const fetchRequests = async () => {
@@ -69,7 +71,7 @@ function RequesterRequests() {
         const result = await deleteRequest(requestToDelete);
         if (result.success) {
           setDraftRequests((prev) =>
-            prev.filter((request) => request.id !== requestToDelete)
+            prev.filter((request) => request._id !== requestToDelete)
           );
           setRequestToDelete(null);
         } else {
@@ -92,20 +94,20 @@ function RequesterRequests() {
           className="text-decoration-none"
           to="/requesterBase/requesterDashboard"
         >
-          <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+          <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
         </Link>
 
         <div className="d-flex mb-3">
           <div className="me-auto">
-            <h3 className="mt-4">Requests</h3>
-            <p>Manage and organize your requests.</p>
+            <h3 className="mt-4">{t("requests")}</h3>
+            <p>{t("requester_requests_text_1")}</p>
           </div>
           <div className="align-self-center">
             <Link
               className={`${styles.primaryButton} btn`}
               to="/requesterBase/createRequest"
             >
-              New request
+              {t("new_request")}
             </Link>
           </div>
         </div>
@@ -118,14 +120,14 @@ function RequesterRequests() {
               data-bs-toggle="tab"
               data-bs-target="#nav-drafts"
             >
-              Drafts ({draftRequests.length})
+              {t("drafts")} ({draftRequests.length})
             </button>
             <button
               className="nav-link"
               data-bs-toggle="tab"
               data-bs-target="#nav-sent"
             >
-              Sent ({sentRequests.length})
+              {t("sent")} ({sentRequests.length})
             </button>
           </div>
         </nav>
@@ -136,15 +138,15 @@ function RequesterRequests() {
           <div className="tab-pane fade show active" id="nav-drafts">
             {draftRequests.length === 0 ? (
               <div className="text-center mt-5">
-                <h4>No draft requests</h4>
+                <h4>{t("no_draft_requests")}</h4>
                 <p className="mt-2">
-                  Once you create a request it will appear here.
+                  {t("no_draft_requests_text_1")}
                 </p>
               </div>
             ) : (
               <div className="mt-4">
                 {draftRequests.map((request) => (
-                  <div className="border mt-3" key={request.id}>
+                  <div className="border mt-3" key={request._id}>
                     <div className="d-flex p-3">
                       <div
                         className="me-auto p-2"
@@ -158,7 +160,7 @@ function RequesterRequests() {
                           <button
                             className="btn btn-sm text-dark"
                             type="button"
-                            id={`dropdownMenu-${request.id}`}
+                            id={`dropdownMenu-${request._id}`}
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
                           >
@@ -167,26 +169,35 @@ function RequesterRequests() {
 
                           <ul
                             className="dropdown-menu"
-                            aria-labelledby={`dropdownMenu-${request.id}`}
+                            aria-labelledby={`dropdownMenu-${request._id}`}
                           >
                             <li>
                               <Link
                                 className="dropdown-item"
-                                to={`/requesterBase/sendDraftRequest/${request.id}`}
+                                to={`/requesterBase/editDraftRequest/${request._id}`}
+                              >
+                                <i className="fa-solid fa-edit me-2"></i>
+                                {t("edit_request")}
+                              </Link>
+                            </li>
+                            <li>
+                              <Link
+                                className="dropdown-item"
+                                to={`/requesterBase/sendDraftRequest/${request._id}`}
                               >
                                 <i className="fa-solid fa-file-import me-2"></i>
-                                Send request
+                                {t("send_request")}
                               </Link>
                             </li>
                             <li>
                               <button
                                 className="dropdown-item"
-                                onClick={() => setRequestToDelete(request.id)}
+                                onClick={() => setRequestToDelete(request._id)}
                                 data-bs-toggle="modal"
                                 data-bs-target="#deleteRequestModal"
                               >
                                 <i className="fa-solid fa-trash me-2"></i>
-                                Delete
+                                {t("delete")}
                               </button>
                             </li>
                           </ul>
@@ -203,37 +214,37 @@ function RequesterRequests() {
           <div className="tab-pane fade" id="nav-sent">
             {sentRequests.length === 0 ? (
               <div className="text-center mt-5">
-                <h4>No sent requests</h4>
+                <h4>{t("no_sent_requests")}</h4>
                 <p className="mt-2">
-                  Go to your drafts and sent a request to a data owner.
+                  {t("no_sent_requests_text_!")}
                 </p>
               </div>
             ) : (
               <table className="table mt-4">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Date Sent</th>
-                    <th>Actions</th>
+                    <th>{t("name")}</th>
+                    <th>{t("date_sent")}</th>
+                    <th>{t("actions")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sentRequests.map((request) => (
-                    <tr key={request.id}>
+                    <tr key={request._id}>
                       <td className="py-3">{request.requestName}</td>
                       <td className="py-3">{request.sentAt}</td>
                       <td className="py-3">
                         <Link
-                          to={`/requesterBase/requesterSentRequestsDetails/${request.id}`}
+                          to={`/requesterBase/requesterSentRequestsDetails/${request._id}`}
                           className={`${styles.primaryButton} btn btn-sm`}
                         >
-                          See details
+                          {t("view_details")}
                         </Link>
                         <Link
-                          to={`/requesterBase/sendDraftRequest/${request.id}`}
+                          to={`/requesterBase/sendDraftRequest/${request._id}`}
                           className={`${styles.secondaryButton} btn btn-sm ms-2`}
                         >
-                          Send to more
+                          {t("send_to_more")}
                         </Link>
                       </td>
                     </tr>
@@ -257,7 +268,7 @@ function RequesterRequests() {
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title" id="deleteRequestModalLabel">
-                Confirm Deletion
+                {t("confirm_deletion")}
               </h5>
               <button
                 type="button"
@@ -267,7 +278,7 @@ function RequesterRequests() {
               ></button>
             </div>
             <div className="modal-body">
-              Are you sure you want to delete this request?
+              {t("delete_request_confirmation")}
             </div>
             <div className="modal-footer">
               <button
@@ -275,7 +286,7 @@ function RequesterRequests() {
                 className={`${styles.secondaryButton} btn`}
                 data-bs-dismiss="modal"
               >
-                Cancel
+                {t("cancel")}
               </button>
               <button
                 type="button"
@@ -283,7 +294,7 @@ function RequesterRequests() {
                 onClick={handleDelete}
                 data-bs-dismiss="modal"
               >
-                Delete
+                {t("delete")}
               </button>
             </div>
           </div>

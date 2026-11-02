@@ -10,6 +10,7 @@ import styles from "../../css/CreateRequest.module.css";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { getRequest, updateRequest } from "../../services/api";
+import { useAuth } from "../../AuthContext";
 
 import {
   getFeatureDropdownValue,
@@ -18,28 +19,162 @@ import {
   fetchOntologies,
   Ontology,
   Option,
+  loadGraph,
 } from "../../helperFunctions/RequestDropdowns";
 
 import { usePermissions } from "../../helperFunctions/PermissionsUtils";
+import { useTranslation } from "react-i18next";
 
 function EditDraftRequest() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { requestId } = useParams();
+  const { t, i18n } = useTranslation();
+  const [loading, setLoading] = useState(true);
 
   const [step, setStep] = useState(0);
+  const nextStep = () => setStep((s) => s + 1);
+  const prevStep = () => setStep((s) => s - 1);
+  const stepTitles = [t("ontologies_selection"), t("permissions"), t("review_and_submit")];
+
   // const stepTitles = ["Ontologies Selection", "Permissions", "Review & Submit"];
 
   const [ontologies, setOntologies] = useState<Ontology[]>([]);
   const [selectedOntologies, setSelectedOntologies] = useState<Ontology[]>([]);
-  const [formData, setFormData] = useState({ requestName: "" });
+  
+  const [, setError] = useState<string | null>(null);
+  
+  const [formData, setFormData] = useState({ requestName: "", extraText: "", emailText: "" });
+  
   const [actionOptions, setActionOptions] = useState<Option[]>([]);
   const [purposeOptions, setPurposeOptions] = useState<Option[]>([]);
-  const [loading, setLoading] = useState(true);
 
   const [actionRefinementsOptions, setActionRefinementsOptions] = useState<Option[]>([]);
   const [purposeRefinementsOptions, setPurposeRefinementsOptions] = useState<Option[]>([]);
   const [datasetRefinementsOptions, setDatasetRefinementsOptions] = useState<Option[]>([]);
   const [generalRefinementsOptions, setGeneralRefinementsOptions] = useState<Option[]>([]);
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  useEffect(() => {
+    console.log("Loading request.")
+    const loadRequest = async () => {
+      try {
+        const result = await getRequest(requestId!);
+        if (result.success) {
+          const data = result.data;
+          setFormData({ 
+            requestName: data.requestName || "",
+            extraText: data.extraText || "",
+            emailText: data.emailText || "",
+           });
+          const ontologyDocs = ontologies.filter((ontology: any)=>{
+            return data.selectedOntologies.some((setOntology: any) => setOntology._id === ontology._id );
+          });
+          setSelectedOntologies(ontologyDocs || []);
+          setPermissions(data.permissions || []);
+        }
+      } catch (err) {
+        console.error("Failed to load request:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadRequest();
+  }, [requestId, ontologies]);
+
+  useEffect(() => {
+    const loadOntologies = async () => {
+      if (!user) {
+        setError("User not authenticated");
+        return;
+      }
+
+      try {
+        const data = await fetchOntologies(user.uid);
+        setOntologies(data);
+
+        const defaultOntology = data.filter((o) => o.isDefault === true);
+        if (defaultOntology) {
+          setSelectedOntologies(defaultOntology);
+        }
+      } catch (err: any) {
+        setError(err.message);
+        console.error(err);
+      }
+    };
+
+    loadOntologies();
+  }, [user]); // Depend on user to reload when auth state changes
+
+
+  useEffect(() => {
+    console.log("Loading actions and purposes for ontologies.");
+    const loadDropdownValues = async () => {
+      const store = await loadGraph(ontologies);
+      const actions = await getFeatureDropdownValue(
+        store,
+        "action"
+      );
+      const purposes = await getFeatureDropdownValue(
+        store,
+        "purpose"
+      );
+      // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+      const actionRefinements = await getAttributeDropdownValue(store);
+      const purposeRefinements = actionRefinements;
+      const datasetRefinements = actionRefinements;
+      const generalRefinements = actionRefinements;
+
+      setActionOptions(actions);
+      setPurposeOptions(purposes);
+      setActionRefinementsOptions(actionRefinements);
+      setPurposeRefinementsOptions(purposeRefinements);
+      setDatasetRefinementsOptions(datasetRefinements);
+      setGeneralRefinementsOptions(generalRefinements);
+    };
+
+    loadDropdownValues();
+  }, [selectedOntologies, i18n.language]);
+
+  const handleDoubleClick = (id: string) => {
+    const existing = selectedOntologies.find((o) => o._id === id);
+    if (existing) return;
+    const ontology = ontologies.find((o) => o._id === id);
+    if (ontology) {
+      setSelectedOntologies([...selectedOntologies, ontology]);
+    }
+  };
+
+  const removeOntology = (id: string) => {
+    setSelectedOntologies(selectedOntologies.filter((o) => o._id !== id));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const result = await updateRequest(requestId!, {
+        ...formData,
+        selectedOntologies,
+        permissions,
+        updatedAt: new Date().toISOString(),
+      });
+      
+      if (result.success) {
+        navigate("/requesterBase/requesterRequests");
+      } else {
+        alert(t("error_updating_request"));
+      }
+    } catch (err) {
+      console.error("Error updating request:", err);
+      alert(t("error_updating_request"));
+    }
+  };
 
   const {
     permissions,
@@ -63,95 +198,6 @@ function EditDraftRequest() {
     updateConstraintsRefinement,
   } = usePermissions();
 
-  const nextStep = () => setStep((s) => s + 1);
-  const prevStep = () => setStep((s) => s - 1);
-
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
-  ) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
-
-  useEffect(() => {
-    const loadOntologies = async () => {
-      try {
-        const data = await fetchOntologies();
-        setOntologies(data);
-      } catch (err) {
-        console.error("Error loading ontologies", err);
-      }
-    };
-    loadOntologies();
-  }, []);
-
-  useEffect(() => {
-    const loadDropdownValues = async () => {
-      const actions = await getFeatureDropdownValue(
-        selectedOntologies,
-        "action"
-      );
-      const purposes = await getFeatureDropdownValue(
-        selectedOntologies,
-        "purpose"
-      );
-      // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
-      const actionRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const purposeRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const datasetRefinements = await getAttributeDropdownValue(selectedOntologies);
-      const generalRefinements = await getAttributeDropdownValue(selectedOntologies);
-
-      setActionOptions(actions);
-      setPurposeOptions(purposes);
-      setActionRefinementsOptions(actionRefinements);
-      setPurposeRefinementsOptions(purposeRefinements);
-      setDatasetRefinementsOptions(datasetRefinements);
-      setGeneralRefinementsOptions(generalRefinements);
-    };
-
-    loadDropdownValues();
-  }, [selectedOntologies]);
-
-  useEffect(() => {
-    const loadRequest = async () => {
-      try {
-        const result = await getRequest(requestId!);
-        if (result.success) {
-          const data = result.request;
-          setFormData({ requestName: data.requestName || "" });
-          setSelectedOntologies(data.selectedOntologies || []);
-          setPermissions(data.permissions || []);
-        }
-      } catch (err) {
-        console.error("Failed to load request:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadRequest();
-  }, [requestId]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const result = await updateRequest(requestId!, {
-        ...formData,
-        selectedOntologies,
-        permissions,
-        updatedAt: new Date().toISOString(),
-      });
-      
-      if (result.success) {
-        navigate("/requesterBase/requesterRequests");
-      } else {
-        alert("Error updating request");
-      }
-    } catch (err) {
-      console.error("Error updating request:", err);
-      alert("Error updating request");
-    }
-  };
-
   if (loading) return <div>Loading...</div>;
 
   const allFieldsFilled = permissions.every(
@@ -164,19 +210,54 @@ function EditDraftRequest() {
         to="/requesterBase/requesterRequests"
         className="text-decoration-none"
       >
-        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+        <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
       </Link>
 
-      <h3 className="mt-4">Edit Request</h3>
-      <p>Update your request details below.</p>
+      <h3 className="mt-4">{t("edit_request")[0] + t("edit_request").slice(1).toLowerCase()}</h3>
+      <p>{t("update_request_details")}</p>
       <hr />
+
+      {/* progress bar with step titles */}
+      <div className="mb-4">
+        <div className="d-flex justify-content-between mb-1">
+          {stepTitles.map((title, index) => (
+            <div
+              key={index}
+              className="text-center flex-fill"
+              style={{ fontSize: "0.875rem" }}
+            >
+              <div
+                style={{
+                  color: index <= step ? "#000" : "#ccc",
+                  fontWeight: index === step ? "bold" : "normal",
+                }}
+              >
+                {title}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="progress mt-3">
+          <div
+            className={`${styles.progressBar} progress-bar`}
+            role="progressbar"
+            style={{ width: `${((step + 1) / stepTitles.length) * 100}%` }}
+            aria-valuenow={((step + 1) / stepTitles.length) * 100}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            {stepTitles[step]}
+          </div>
+        </div>
+      </div>
 
       <form onSubmit={handleSubmit}>
         {step === 0 && (
           <>
             <div className="mb-3">
               <label className={`${styles.formLabel} form-label`}>
-                Request name
+                {t("request_name")}
               </label>
               <input
                 name="requestName"
@@ -189,66 +270,95 @@ function EditDraftRequest() {
             </div>
             <div className="mb-3">
               <label className={`${styles.formLabel} form-label`}>
-                Ontologies
+                {t("additional_terms")} ({t("optional")})
+              </label>
+              <textarea
+                name="extraText"
+                value={formData.extraText}
+                className={`${styles.formInput} form-control`}
+                id="extraText"
+                onChange={handleChange}
+                rows={4}
+                placeholder={t("additional_terms_placeholder")}
+              />
+            </div>
+            <div className="mb-3">
+              <label className={`${styles.formLabel} form-label`}>
+                {t("email_text")} ({t("optional")})
+              </label>
+              <textarea
+                name="emailText"
+                value={formData.emailText}
+                className={`${styles.formInput} form-control`}
+                id="emailText"
+                onChange={handleChange}
+                rows={4}
+                placeholder={t("email_text_placeholder")}
+              />
+            </div>
+            <div className="mb-3">
+              <label className={`${styles.formLabel} form-label`}>
+                {t("ontologies")}
               </label>
               <select
                 className={`${styles.formInput} form-select`}
                 size={5}
-                defaultValue=""
-                onDoubleClick={(e) => {
-                  const selected = ontologies.find(
-                    (o) => o.id === e.currentTarget.value
-                  );
-                  if (
-                    selected &&
-                    !selectedOntologies.find((o) => o.id === selected.id)
-                  ) {
-                    setSelectedOntologies([...selectedOntologies, selected]);
-                  }
-                }}
+                aria-label="Ontology select"
+                onDoubleClick={(e) => handleDoubleClick(e.currentTarget.value)}
+                disabled={ontologies.length === 0}
               >
-                <option value="" disabled>
-                  Double-click to select
-                </option>
-                {ontologies
-                  .filter(
-                    (ontology) =>
-                      !selectedOntologies.some((o) => o.id === ontology.id)
-                  )
-                  .map(({ id, name }) => (
-                    <option key={id} value={id}>
-                      {name}
+                {ontologies.length === 0 ? (
+                  <option disabled>{t("loading_ontologies")}</option>
+                ) : (
+                  <>
+                    <option className="mb-2" disabled selected>
+                      {t("double_click_to_select")}
                     </option>
-                  ))}
+                    {ontologies
+                      .filter((ontology) => !ontology.isDefault)
+                      .map(({ _id, name }) => (
+                        <option key={_id} value={_id}>
+                          {name}
+                        </option>
+                      ))}
+                  </>
+                )}
               </select>
 
               <div style={{ marginTop: "1rem" }}>
-                {selectedOntologies.map(({ id, name }) =>
-                  id === "default" ? (
+                {selectedOntologies.map(({ _id, name, isDefault }) =>
+                  isDefault ? (
                     <span
-                      key={id}
+                      key={_id}
                       className="border px-2 py-1 me-2 bg-light text-muted"
                       style={{ cursor: "not-allowed" }}
-                      title="Default ontology cannot be removed"
+                      title="$Default ontology cannot be removed"
                     >
                       {name}
                     </span>
                   ) : (
                     <span
-                      key={id}
+                      key={_id}
                       className="border px-2 py-1 me-2"
                       style={{ cursor: "pointer" }}
-                      onClick={() =>
-                        setSelectedOntologies(
-                          selectedOntologies.filter((o) => o.id !== id)
-                        )
-                      }
+                      onClick={() => removeOntology(_id)}
                     >
-                      {name} <span>&times;</span>
+                      {name} <span style={{ marginLeft: 5 }}>&times;</span>
                     </span>
                   )
                 )}
               </div>
+            </div>
+
+            <div className="alert alert-warning mt-3" role="alert">
+              {t("selected_ontologies_text_1")}{" "}
+              <Link
+                to="/requesterBase/ontologies"
+                className="text-decoration-underline"
+              >
+                {t("selected_ontologies_text_2")}
+              </Link>{" "}
+              {t("selected_ontologies_text_3")}
             </div>
 
             <button
@@ -257,7 +367,7 @@ function EditDraftRequest() {
               onClick={nextStep}
               disabled={!formData.requestName.trim()}
             >
-              Next
+              {t("next")}
             </button>
           </>
         )}
@@ -269,7 +379,7 @@ function EditDraftRequest() {
                 <div className="border p-4">
                   <div className="d-flex mb-2">
                     <div className="me-auto">
-                      <h5>Permission {index + 1}</h5>
+                      <h5>{t("permission")} {index + 1}</h5>
                     </div>
                     <div>
                       {permission.id !== permissions[0].id && (
@@ -278,7 +388,7 @@ function EditDraftRequest() {
                           className="text-danger text-decoration-none"
                           onClick={() => removePermission(permission.id)}
                         >
-                          Delete permission
+                          {t("delete_permission")}
                         </a>
                       )}
                     </div>
@@ -286,7 +396,7 @@ function EditDraftRequest() {
 
                   <div className="mb-3">
                     <label className={`${styles.formLabel} form-label`}>
-                      Dataset
+                      {t("dataset")}
                     </label>
                     <input
                       type="text"
@@ -295,7 +405,7 @@ function EditDraftRequest() {
                       onChange={(e) =>
                         updateDataset(permission.id, e.target.value)
                       }
-                      placeholder="Dataset URL"
+                      placeholder={t("dataset_url")}
                       required
                     />
                   </div>
@@ -303,7 +413,7 @@ function EditDraftRequest() {
                   {permission.datasetRefinements.map((ref) => (
                     <div className="row mt-2 mb-3" key={ref.id}>
                       <div className="d-flex mb-3 mt-3">
-                        <h6 className="me-auto">Dataset Refinement</h6>
+                        <h6 className="me-auto">{t("dataset_refinement")}</h6>
                         <i
                           className="fa-solid fa-trash"
                           onClick={() =>
@@ -314,16 +424,16 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Attribute
+                          {t("left_operand")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={ref.attribute || ""}
+                          value={ref.leftOperand || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               ref.id,
-                              "attribute",
+                              "leftOperand",
                               e.target.value
                             )
                           }
@@ -337,21 +447,21 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Instance
+                          {t("operator")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={ref.instance || ""}
+                          value={ref.operator || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               ref.id,
-                              "instance",
+                              "operator",
                               e.target.value
                             )
                           }
                         >
-                          {getOperandDropdownValue().map((opt) => (
+                          {getOperandDropdownValue(t).map((opt) => (
                             <option key={opt.value} value={opt.value}>
                               {opt.label}
                             </option>
@@ -360,17 +470,17 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Value
+                          {t("right_operand")}
                         </label>
                         <input
                           type="text"
                           className={`${styles.formInput} form-control`}
-                          value={ref.value || ""}
+                          value={ref.rightOperand || ""}
                           onChange={(e) =>
                             updateDatasetRefinement(
                               permission.id,
                               ref.id,
-                              "value",
+                              "rightOperand",
                               e.target.value
                             )
                           }
@@ -385,13 +495,13 @@ function EditDraftRequest() {
                     onClick={() => addDatasetRefinement(permission.id)}
                     disabled={!permission.dataset}
                   >
-                    Add dataset refinement
+                    {t("add_dataset_refinement")}
                   </button>
 
                   <div className="row mt-4">
                     <div className="col">
                       <label className={`${styles.formLabel} form-label`}>
-                        Action
+                        {t("action")}
                       </label>
                       <select
                         className={`${styles.formInput} form-select`}
@@ -410,7 +520,7 @@ function EditDraftRequest() {
                       {permission.actionRefinements.map((ref) => (
                         <div className="row mt-2 mb-3" key={ref.id}>
                           <div className="d-flex mb-3 mt-3">
-                            <h6 className="me-auto">Action Refinement</h6>
+                            <h6 className="me-auto">{t("action_refinement")}</h6>
                             <i
                               className="fa-solid fa-trash"
                               onClick={() =>
@@ -421,16 +531,16 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Attribute
+                              {t("left_operand")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={ref.attribute || ""}
+                              value={ref.leftOperand || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   ref.id,
-                                  "attribute",
+                                  "leftOperand",
                                   e.target.value
                                 )
                               }
@@ -444,21 +554,21 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Instance
+                              {t("operator")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={ref.instance || ""}
+                              value={ref.operator || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   ref.id,
-                                  "instance",
+                                  "operator",
                                   e.target.value
                                 )
                               }
                             >
-                              {getOperandDropdownValue().map((opt) => (
+                              {getOperandDropdownValue(t).map((opt) => (
                                 <option key={opt.value} value={opt.value}>
                                   {opt.label}
                                 </option>
@@ -467,17 +577,17 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Value
+                              {t("right_operand")}
                             </label>
                             <input
                               className={`${styles.formInput} form-control`}
                               type="text"
-                              value={ref.value || ""}
+                              value={ref.rightOperand || ""}
                               onChange={(e) =>
                                 updateActionRefinement(
                                   permission.id,
                                   ref.id,
-                                  "value",
+                                  "rightOperand",
                                   e.target.value
                                 )
                               }
@@ -491,13 +601,13 @@ function EditDraftRequest() {
                         className={`${styles.secondaryButton} btn btn-sm mt-3`}
                         disabled={!permission.action}
                       >
-                        Add action refinement
+                        {t("add_action_refinement")}
                       </button>
                     </div>
 
                     <div className="col">
                       <label className={`${styles.formLabel} form-label`}>
-                        Purpose
+                        {t("purpose")}
                       </label>
                       <select
                         className={`${styles.formInput} form-select`}
@@ -516,7 +626,7 @@ function EditDraftRequest() {
                       {permission.purposeRefinements.map((ref) => (
                         <div className="row mt-2 mb-3" key={ref.id}>
                           <div className="d-flex mb-3 mt-3">
-                            <h6 className="me-auto">Purpose Refinement</h6>
+                            <h6 className="me-auto">{t("purpose_refinement")}</h6>
                             <i
                               className="fa-solid fa-trash"
                               onClick={() =>
@@ -527,16 +637,16 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Attribute
+                              {t("left_operand")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={ref.attribute || ""}
+                              value={ref.leftOperand || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   ref.id,
-                                  "attribute",
+                                  "leftOperand",
                                   e.target.value
                                 )
                               }
@@ -550,21 +660,21 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Instance
+                              {t("operator")}
                             </label>
                             <select
                               className={`${styles.formInput} form-select`}
-                              value={ref.instance || ""}
+                              value={ref.operator || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   ref.id,
-                                  "instance",
+                                  "operator",
                                   e.target.value
                                 )
                               }
                             >
-                              {getOperandDropdownValue().map((opt) => (
+                              {getOperandDropdownValue(t).map((opt) => (
                                 <option key={opt.value} value={opt.value}>
                                   {opt.label}
                                 </option>
@@ -573,17 +683,17 @@ function EditDraftRequest() {
                           </div>
                           <div className="col">
                             <label className={`${styles.formLabel} form-label`}>
-                              Value
+                              {t("right_operand")}
                             </label>
                             <input
                               className={`${styles.formInput} form-control`}
                               type="text"
-                              value={ref.value || ""}
+                              value={ref.rightOperand || ""}
                               onChange={(e) =>
                                 updatePurposeRefinement(
                                   permission.id,
                                   ref.id,
-                                  "value",
+                                  "rightOperand",
                                   e.target.value
                                 )
                               }
@@ -597,7 +707,7 @@ function EditDraftRequest() {
                         className={`${styles.secondaryButton} btn btn-sm mt-3`}
                         disabled={!permission.purpose}
                       >
-                        Add purpose refinement
+                        {t("add_purpose_refinement")}
                       </button>
                     </div>
                   </div>
@@ -616,16 +726,16 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Attribute
+                          {t("left_operand")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={ref.attribute || ""}
+                          value={ref.leftOperand || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               ref.id,
-                              "attribute",
+                              "leftOperand",
                               e.target.value
                             )
                           }
@@ -639,21 +749,21 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Instance
+                          {t("operator")}
                         </label>
                         <select
                           className={`${styles.formInput} form-select`}
-                          value={ref.instance || ""}
+                          value={ref.operator || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               ref.id,
-                              "instance",
+                              "operator",
                               e.target.value
                             )
                           }
                         >
-                          {getOperandDropdownValue().map((opt) => (
+                          {getOperandDropdownValue(t).map((opt) => (
                             <option key={opt.value} value={opt.value}>
                               {opt.label}
                             </option>
@@ -662,17 +772,17 @@ function EditDraftRequest() {
                       </div>
                       <div className="col">
                         <label className={`${styles.formLabel} form-label`}>
-                          Value
+                          {t("right_operand")}
                         </label>
                         <input
                           className={`${styles.formInput} form-control`}
                           type="text"
-                          value={ref.value || ""}
+                          value={ref.rightOperand || ""}
                           onChange={(e) =>
                             updateConstraintsRefinement(
                               permission.id,
                               ref.id,
-                              "value",
+                              "rightOperand",
                               e.target.value
                             )
                           }
@@ -685,7 +795,7 @@ function EditDraftRequest() {
                     onClick={() => addConstraintRefinement(permission.id)}
                     className={`${styles.dashedButton} btn btn-sm w-100 mt-4`}
                   >
-                    Add constraint
+                    {t("add_constraint")}
                   </button>
                 </div>
               </div>
@@ -696,7 +806,7 @@ function EditDraftRequest() {
               onClick={addPermission}
               className={`${styles.secondaryButton} btn w-100`}
             >
-              Add Permission
+              {t("add_permission")}
             </button>
 
             <button
@@ -704,7 +814,7 @@ function EditDraftRequest() {
               className={`${styles.secondaryButton} btn mt-3 w-20`}
               onClick={prevStep}
             >
-              Previous
+              {t("previous")}
             </button>
             <button
               type="button"
@@ -712,7 +822,7 @@ function EditDraftRequest() {
               onClick={nextStep}
               disabled={!allFieldsFilled}
             >
-              Next
+              {t("next")}
             </button>
           </>
         )}
@@ -720,21 +830,20 @@ function EditDraftRequest() {
         {step === 2 && (
           <>
             <p className="text-muted mt-4">
-              Before you update your request, ensure all values are accurate.
-              Incorrect information may cause rejection by the data owner.
+              {t("update_request_text_1")}
             </p>
             <button
               type="button"
               className={`${styles.secondaryButton} btn mt-3 w-20`}
               onClick={prevStep}
             >
-              Previous
+              {t("previous")}
             </button>
             <button
               className={`${styles.primaryButton} btn mt-3 w-20 ms-2`}
               type="submit"
             >
-              Update Request
+              {t("update_request")}
             </button>
           </>
         )}

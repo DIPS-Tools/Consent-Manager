@@ -1,7 +1,14 @@
 import express from "express";
-import admin from "firebase-admin";
-import { db } from "../config/firebase.js";
+import { db } from "../config/database.service.ts";
 import "express-session";
+import keycloak, { login, verify } from "../config/keycloak.ts";
+import { ObjectId } from "mongodb";
+import { sendTestEmail } from "../config/nodemailer.ts";
+import { decodeJwt, jwtVerify, SignJWT } from "jose";
+import ChangePasswordEmail from "../../emails/templates/changePassword.ts";
+import crypto from "crypto";
+import { ExpiredChangePasswordEmail, ExpiredVerificationEmail } from "../../emails/templates/expiredLink.ts";
+import { RequestData } from "../../src/components/Interfaces/Requests.ts";
 
 declare module "express-session" {
   interface SessionData {
@@ -11,8 +18,17 @@ declare module "express-session" {
 }
 
 const router = express.Router();
+const secret = new TextEncoder().encode(process.env.EMAIL_LINK_SECRET!);
+const email_sender = process.env.DEFAULT_EMAIL_SENDER || "DIPS Consent Manager <dips-consent-manager@soton.ac.uk>";
 
-// POST /api/auth/login - User login with Firebase Auth
+interface UserRecord{
+  _id: string,
+  type: "consumer" | "provider",
+  name: string,
+  email: string,
+}
+
+// POST /api/auth/login - User login with keycloak
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -28,120 +44,104 @@ router.post("/login", async (req, res) => {
     const loginSourceHeader = req.headers["x-login-source"];
     const loginSource = loginSourceHeader === "ui" ? "UI" : "External/API";
 
-    // --- Find user in Firestore ---
-    const usersSnapshot = await db
-      .collection("owners")
-      .where("email", "==", email)
-      .get();
-    const requestersSnapshot = await db
-      .collection("requesters")
-      .where("email", "==", email)
-      .get();
-
     let role = "unknown";
     let userData = null;
     let userUid = null;
-
-    if (!usersSnapshot.empty) {
-      role = "owner";
-      const doc = usersSnapshot.docs[0];
-      userData = doc.data();
-      userUid = doc.id;
-    } else if (!requestersSnapshot.empty) {
-      role = "requester";
-      const doc = requestersSnapshot.docs[0];
-      userData = doc.data();
-      userUid = doc.id;
-    } else {
-      return res.status(401).json({
-        error: "User not found",
-        success: false,
-      });
-    }
+    let apiToken = null;
 
     // --- External API login ---
-    let apiToken: any = null;
     try {
       const formData = new URLSearchParams();
+      formData.append("grant_type", "password");
       formData.append("username", email);
       formData.append("password", password);
+      formData.append("client_id","consent-manager");
 
-      const externalApiUrl =
-        process.env.EXTERNAL_API_BASE_URL ||
-        "https://dips.soton.ac.uk/negotiation-api";
-      console.log("external api url is: ", externalApiUrl);
-      const apiResponse = await fetch(`${externalApiUrl}/user/login/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: formData.toString(),
-      });
+      apiToken = await login(email, password);
+      console.log("Response is:",apiToken);
 
-      if (apiResponse.ok) {
-        const tokenText = await apiResponse.text();
-        apiToken = JSON.parse(tokenText); // parse once here
+      if (apiToken) {
+        const access_token = apiToken.access_token;
         console.log(
           "External API login successful:",
-          tokenText.substring(0, 50)
+          access_token.substring(0, 50)
         );
-
-        // --- Get MongoDB user ID if missing ---
-        if (!userData?.mongoUserId) {
-          try {
-            const userDetailsResponse = await fetch(
-              `${externalApiUrl}/user/details/`,
-              {
-                method: "GET",
-                headers: { Authorization: `Bearer ${tokenText}` },
-              }
-            );
-
-            if (userDetailsResponse.ok) {
-              const userDetails = await userDetailsResponse.json();
-              const mongoUserId =
-                userDetails.user_id || userDetails.id || userDetails._id;
-
-              if (mongoUserId) {
-                const collection = role === "owner" ? "owners" : "requesters";
-                await db.collection(collection).doc(userUid).update({
-                  mongoUserId,
-                  apiRegistrationSuccess: true,
-                  mongoIdAddedOnLogin: true,
-                  mongoIdAddedDate: new Date().toISOString(),
-                });
-                userData = { ...userData, mongoUserId };
-              }
+        console.log("Decoded token:",keycloak.jwt.decode(access_token));
+        try {
+          const detailsForm = new URLSearchParams({user_email: email});
+          const userManagementServiceURL = process.env.USER_MANAGEMENT_SERVICE_API_URL || "";
+          const userDetailsResponse = await fetch(
+            `${userManagementServiceURL}/user/details/?${detailsForm}`,
+            {
+              method: "GET",
+              headers: { Authorization: `Bearer ${access_token}` },
             }
-          } catch (userDetailsError) {
-            console.warn("Error fetching MongoDB user ID:", userDetailsError);
+          );
+
+          console.log("User details response:",userDetailsResponse);
+
+          if (userDetailsResponse.ok) {
+            userData = (await userDetailsResponse.json()) as UserRecord;
+            userUid = userData._id;
           }
+          else {
+            const userDoc = await db.collection("users").findOne({email: {$eq: email}});
+            if (userDoc !== null) {
+              userData = { password: null, type: userDoc.type, name: userDoc.name, ...userDoc };
+              userUid = userDoc._id.toString();
+              console.log("User doc: ", userDoc);
+            }
+            else {
+              console.warn("Error fetching user details:", userDetailsResponse.statusText);
+              return res.status(401).json({
+                error:  userDetailsResponse.statusText,
+                success: false,
+              });
+            } 
+          }
+        } catch (userDetailsError) {
+          console.warn("Error fetching user details:", userDetailsError);
+          return res.status(401).json({
+              error:  userDetailsError,
+              success: false,
+            });
         }
       }
     } catch (apiError) {
       console.log("External API login failed:", apiError);
-    }
-
-    if (!apiToken) {
       return res.status(401).json({
-        error: "Invalid email or password",
+        error: "External API login failed",
         success: false,
       });
     }
 
-    // --- Save API token in Firestore ---
-    try {
-      const collection = role === "owner" ? "owners" : "requesters";
-      await db.collection(collection).doc(userUid).update({
-        apiToken,
-        apiTokenSavedOn: new Date().toISOString(),
+    if (!userData) {
+      return res.status(500).json({
+        success: false,
+        error: "User details unavailable",
       });
-    } catch (saveError) {
-      console.warn("Failed to save API token:", saveError);
+    }
+
+    if (!apiToken) {
+      return res.status(401).json({
+        error: "External API login failed",
+        success: false,
+      });
     }
 
     // --- Store login info in session ---
     if (req.session) {
       req.session.loginSource = loginSource;
-      req.session.userUid = userUid;
+      if (userUid) {
+        req.session.userUid = userUid;
+      }
+    }
+
+    if (userData.type === 'consumer'){
+      role = "requester";
+    }
+    else if (userData.type === 'provider'){
+      role = "owner";
     }
 
     // --- Respond ---
@@ -159,8 +159,559 @@ router.post("/login", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Login error:", error);
-    res.status(401).json({
+    res.status(403).json({
       error: error.message || "Authentication failed",
+      success: false,
+    });
+  }
+});
+
+router.post("/create", async (req, res) => { //TODO: add authentication
+  try {
+    console.log("========================================");
+    console.log("REGISTRATION REQUEST FOR NEW USER");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("========================================");
+
+    const {
+      email,
+      role,
+      type,
+      ...additionalData
+    } = req.body;
+
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+          return res.status(401).json({
+            success: false,
+            error: "Missing bearer token",
+          });
+        }
+    
+    const token = req.headers.authorization.substring(7);
+    const verification = await verify(token);
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+
+    if (!email || !role) {
+      console.error("Missing required fields:", {
+        hasEmail: !!email,
+        hasRole: !!role,
+      })
+      return res.status(400).json({
+        error: "Email and role are required",
+        success: false,
+      })
+    }
+
+    if (role !== "owner") {
+      console.error("Invalid role. This function can only create users who are owners.")
+      return res.status(400).json({
+        error: 'Role must be "owner"',
+        success: false,
+      })
+    }
+
+    const email_details = {
+      from: email_sender,
+      to: email,
+      subject: 'Consent Request',
+      html: '<p>Please click the link to consent:</p><p><a href="LINK">Consent</a></p><p>Or click the following link to reject:</p><p><a href="LINK">Reject</a></p>',
+    }
+    const email_result = await sendTestEmail(email_details);
+
+    if (email_result.success) {
+      console.log("Email sent successfully. Preview URL:", email_result.url);
+    }
+    else {
+      return res.status(405).json({
+        error: 'Unable to send email',
+        success: false,
+      }) 
+    }
+
+    // Save user data to appropriate Firestore collection
+    const userData = {
+      name: "default",
+      email,
+      role: "owner",
+      createdAt: new Date().toISOString(),
+      ...additionalData,
+    };
+
+    let apiRegistrationSuccess = false;
+    let uid = null;
+    let userRecord = null;
+    try {
+      const externalApiUrl =
+        process.env.USER_MANAGEMENT_SERVICE_API_URL ||
+        "https://dips.soton.ac.uk/negotiation-api";
+      const masterPasswordParam = process.env.MASTER_PASSWORD || "master_password";
+
+      const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+
+      console.log("Calling API registration...");
+      console.log("URL:", `${externalApiUrl}/user/register`);
+      console.log("Email:", email);
+      console.log("Type:", role === "requester" ? "consumer" : "provider");
+
+      const fallback = "unknown";
+
+      //TODO: Make the password actually random and unique per registration.
+      const registrationPayload = {
+        email: email,
+        username: email.includes("@") ? email.split("@")[0] : email,
+        password: "Random_Password_For_Testing_13!",
+        name: fallback,
+        type: "provider",
+      
+        incorporation: additionalData?.incorporation?.trim() || fallback,
+        address: additionalData?.address?.trim() || fallback,
+        position_title: additionalData?.positionTitle?.trim() || fallback,
+        vat_no: additionalData?.VAT_No?.trim() || fallback,
+        phone: additionalData?.phone?.trim() || fallback,
+        organization: additionalData?.organization || [fallback],
+      };
+
+      const apiResponse = await fetch(
+        `${externalApiUrl}/user/register?master_password_input=${encodedMasterPassword}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(registrationPayload),
+        }
+      );
+
+      console.log("API response status:", apiResponse.status);
+
+      apiRegistrationSuccess = apiResponse.ok;
+      if (apiResponse.ok) {
+        const successData = (await apiResponse.json()) as UserRecord;
+        userRecord = successData;
+        console.log("User Management Service API registration successful:", successData);
+
+        // Extract MongoDB user ID from the response
+        if (successData && (successData._id)) {
+          uid = successData._id;
+          console.log("MongoDB user ID received:", uid);
+        } else {
+          console.warn("No user ID found in API response:", successData);
+        }
+      } else {
+        const errorData = await apiResponse.json();
+        console.error("External API registration failed:", {
+          status: apiResponse.status,
+          statusText: apiResponse.statusText,
+          error: errorData,
+          email: email,
+          role: "owner",
+          type: "provider",
+        });
+      }
+
+    } catch (apiError: any) {
+      console.error("External API registration exception:", {
+        error: apiError.message,
+        stack: apiError.stack,
+        email: email,
+      });
+    }
+
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve new user record",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      user: {
+        uid,
+        email: userRecord.email,
+        role: "owner",
+        userData,
+        apiRegistrationSuccess,
+      },
+    });
+  } catch (error: any) {
+    console.error("Registration error:", error);
+    res.status(400).json({
+      error: error.message || "Registration failed",
+      success: false,
+    });
+  }
+})
+
+router.post("/update", async (req, res) => {
+  try {
+    console.log("========================================");
+    console.log("📝 UPDATE REQUEST RECEIVED");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("========================================");
+
+    const {
+      email,
+      password,
+      new_password,
+      confirm_password,
+      name,
+      role,
+      type,
+      uid,
+      ...additionalData
+    } = req.body;
+
+    console.log("Parsed user data:", {
+      email,
+      name,
+      role,
+      hasPassword: !!password,
+      additionalFields: Object.keys(additionalData),
+    });
+
+    if (!email || !password || !name || !role) {
+      console.error("Missing required fields:", {
+        hasEmail: !!email,
+        hasPassword: !!password,
+        hasName: !!name,
+        hasRole: !!role,
+      });
+      return res.status(400).json({
+        error: "Email, password, name, and role are required",
+        success: false,
+      });
+    }
+
+    if (!["owner", "requester"].includes(role)) {
+      console.error("Invalid role:", role);
+      return res.status(400).json({
+        error: 'Role must be either "owner" or "requester"',
+        success: false,
+      });
+    }
+
+    if (new_password !== confirm_password) {
+      console.error("New passwords do not match.");
+      return res.status(400).json({
+        error: 'New passwords do not match.',
+        success: false,
+      });
+    }
+
+    const formData = new URLSearchParams();
+    formData.append("username", email);
+    formData.append("password", password);
+
+    const userData = {
+      name,
+      email,
+      role,
+      updatedAt: new Date().toISOString(),
+      ...additionalData,
+    };
+
+    // External API registration
+    let apiRegistrationSuccess = false;
+    let mongoUserId = null;
+    let userRecord = null;
+    try {
+      const externalApiUrl =
+        process.env.USER_MANAGEMENT_SERVICE_API_URL ||
+        "https://dips.soton.ac.uk/negotiation-api";
+      const masterPasswordParam = process.env.MASTER_PASSWORD || "master_password";
+
+      const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+
+      console.log("Calling User Management Service registration...");
+      console.log("URL:", `${externalApiUrl}/user/update-password`);
+      console.log("Email:", email);
+      console.log("Type:", role === "requester" ? "consumer" : "provider");
+
+      const apiResponse = await fetch(
+        `${externalApiUrl}/user/update-password?master_password_input=${encodedMasterPassword}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email: email,
+            password: new_password,
+            name: name,
+            type: role === "requester" ? "consumer" : "provider",
+          }),
+        }
+      );
+
+      console.log("User Management Service response status:", apiResponse.status);
+
+      apiRegistrationSuccess = apiResponse.ok;
+      if (apiResponse.ok) {
+        const successData = (await apiResponse.json()) as UserRecord;
+        userRecord = successData;
+        console.log("Password changed successfully:", successData);
+
+        // Extract MongoDB user ID from the response
+      } else {
+        const errorData = await apiResponse.json();
+        console.error("External API registration failed:", {
+          status: apiResponse.status,
+          statusText: apiResponse.statusText,
+          error: errorData,
+          email: email,
+          name: name,
+          role: role,
+          type: role === "requester" ? "consumer" : "provider",
+        });
+        return 
+      }
+    } catch (apiError: any) {
+      console.error("External API registration exception:", {
+        error: apiError.message,
+        stack: apiError.stack,
+        email: email,
+        name: name,
+      });
+    }
+
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve user record",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      user: {
+        uid: userRecord._id,
+        email: userRecord.email,
+        role,
+        userData,
+        apiRegistrationSuccess,
+        mongoUserId,
+      },
+    });
+  } catch (error: any) {
+    console.error("Update error:", error);
+    res.status(400).json({
+      error: error.message || "Update failed",
+      success: false,
+    });
+  }
+});
+
+router.post("/change-password", async (req, res) => {
+  try {
+    console.log("========================================");
+    console.log("📝 UPDATE REQUEST RECEIVED");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+    console.log("========================================");
+
+    const {
+      new_password,
+      confirm_password,
+      token
+    } = req.body;
+
+    if (!new_password) {
+      console.error("Missing required fields:", {
+        hasPassword: !!new_password,
+      });
+      return res.status(400).json({
+        error: "New password is required.",
+        success: false,
+      });
+    }
+
+    if (new_password !== confirm_password) {
+      console.error("New passwords do not match.");
+      return res.status(400).json({
+        error: 'New passwords do not match.',
+        success: false,
+      });
+    }
+
+    const { payload } = await jwtVerify(token, secret);
+    if (!payload) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+    const decoded_token = decodeJwt(token);
+    console.log("Decoded token payload is:");
+    console.log(decoded_token);
+
+    if (!decoded_token.email) {
+      return res.status(401).json({
+        error: "Email address missing",
+        success: false,
+      });
+    }
+    
+    const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Token verification failed",
+        success: false,
+      });
+    }
+
+    if (verification.action !== "change-password"){
+      return res.status(401).json({
+        error: "Token action mismatch.",
+        success: false,
+      });
+    }
+
+    if (verification.used) {
+      return res.status(401).json({
+        error: "Token already used",
+        success: false,
+      });
+    }
+
+    if (Date.now() > verification.expiresAt) {
+      const language = decoded_token.language ? decoded_token.language.toString() : "en";
+      const email = decoded_token.email;
+      const random_token = crypto.randomBytes(32).toString("hex");
+      const token_payload = {
+        email: email,
+        action: "change-password",
+        token: random_token,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+        used: false
+      }
+      const email_token = await new SignJWT(token_payload)
+        .setProtectedHeader({alg: "HS256"})
+        .sign(secret);
+
+      // Delete the expired token.
+      await db.collection("tokens").deleteOne({token: {$eq: decoded_token.token}});
+      // Insert the new token.
+      const insert_token = await db.collection("tokens").insertOne(token_payload);
+      
+      if (insert_token) {
+        const email_content = ExpiredChangePasswordEmail(email_token, language);
+
+        const email_details = {
+            from: email_sender,
+            to: email,
+            subject: 'Change Password',
+            html: email_content,
+          }
+        await sendTestEmail(email_details);
+
+        return res.status(401).json({
+          error: "Token is expired. A new email has been sent.",
+          success: false,
+        })
+      }
+
+      return res.status(401).json({
+        error: "Token is expired",
+        success: false,
+      });
+    }
+
+    const user_doc = await db.collection("users").findOne({email: decoded_token.email.toString()});
+    const email = decoded_token.email.toString();
+
+    if (!user_doc) {
+      return res.status(401).json({
+        error: "User not found.",
+        success: false,
+      });
+    }
+
+    const userData = {
+      _id: user_doc._id,
+      email: user_doc.email,
+      keycloak_sub: user_doc.keycloak_sub,
+      password: new_password,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // External API registration
+    let apiRegistrationSuccess = false;
+    let mongoUserId = null;
+    let userRecord = null;
+    try {
+      const externalApiUrl =
+        process.env.USER_MANAGEMENT_SERVICE_API_URL ||
+        "https://dips.soton.ac.uk/negotiation-api";
+      const masterPasswordParam = process.env.MASTER_PASSWORD || "master_password";
+      const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+
+      const apiResponse = await fetch(
+        `${externalApiUrl}/user/update-password?master_password_input=${encodedMasterPassword}`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(userData),
+        }
+      );
+
+      console.log("User Management Service response status:", apiResponse.status);
+
+      apiRegistrationSuccess = apiResponse.ok;
+      if (apiResponse.ok) {
+        const successData = (await apiResponse.json()) as UserRecord;
+        userRecord = successData;
+        await db.collection("tokens").updateOne({token: {$eq: decoded_token.token}}, {$set: {used: true}});
+        console.log("Password changed successfully:", successData);
+        // Extract MongoDB user ID from the response
+      } else {
+        const errorData = await apiResponse.json();
+        console.error("External API registration failed:", {
+          status: apiResponse.status,
+          statusText: apiResponse.statusText,
+          error: errorData,
+          email: email,
+        });
+        return 
+      }
+    } catch (apiError: any) {
+      console.error("External API registration exception:", {
+        error: apiError.message,
+        stack: apiError.stack,
+        email: email,
+      });
+    }
+
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve user record",
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      user: {
+        uid: userRecord._id,
+        email: userRecord.email,
+        userData,
+        apiRegistrationSuccess,
+        mongoUserId,
+      },
+    });
+  } catch (error: any) {
+    console.error("Update error:", error);
+    res.status(400).json({
+      error: error.message || "Update failed",
       success: false,
     });
   }
@@ -180,11 +731,10 @@ router.post("/register", async (req, res) => {
       name,
       role,
       type,
-      masterPassword,
       ...additionalData
     } = req.body;
 
-    console.log("📋 Parsed registration data:", {
+    console.log("Parsed registration data:", {
       email,
       name,
       role,
@@ -193,7 +743,7 @@ router.post("/register", async (req, res) => {
     });
 
     if (!email || !password || !name || !role) {
-      console.error("❌ Missing required fields:", {
+      console.error("Missing required fields:", {
         hasEmail: !!email,
         hasPassword: !!password,
         hasName: !!name,
@@ -206,53 +756,49 @@ router.post("/register", async (req, res) => {
     }
 
     if (!["owner", "requester"].includes(role)) {
-      console.error("❌ Invalid role:", role);
+      console.error("Invalid role:", role);
       return res.status(400).json({
         error: 'Role must be either "owner" or "requester"',
         success: false,
       });
     }
 
-    console.log("🔥 Creating Firebase user...");
-    // Create Firebase user using Admin SDK
-    const userRecord = await admin.auth().createUser({
-      email,
-      password,
-      displayName: name,
-    });
-    console.log("✅ Firebase user created:", userRecord.uid);
-
-    // Save user data to appropriate Firestore collection
-    const collection = role === "owner" ? "owners" : "requesters";
-    const userData = {
-      name,
-      email,
-      role,
-      createdAt: new Date().toISOString(),
-      ...additionalData,
-    };
-
-    console.log("💾 Saving to Firestore collection:", collection);
-    await db.collection(collection).doc(userRecord.uid).set(userData);
-    console.log("✅ Saved to Firestore");
-
     // External API registration
     let apiRegistrationSuccess = false;
-    let mongoUserId = null;
+    let userRecord = null;
+    let userData = null;
     try {
       const externalApiUrl =
-        process.env.EXTERNAL_API_BASE_URL ||
+        process.env.USER_MANAGEMENT_SERVICE_API_URL ||
         "https://dips.soton.ac.uk/negotiation-api";
-      const masterPasswordParam =
-        masterPassword ||
-        process.env.EXTERNAL_API_MASTER_PASSWORD ||
-        "5hnd..jk4ne!kwjs?wnsmmf";
+
+      const masterPasswordParam = process.env.MASTER_PASSWORD || "master_password";
+
       const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
 
-      console.log("🌐 Calling negotiation API registration...");
-      console.log("   URL:", `${externalApiUrl}/user/register`);
-      console.log("   Email:", email);
-      console.log("   Type:", role === "requester" ? "consumer" : "provider");
+      console.log("Calling user management service API registration...");
+      console.log("URL:", `${externalApiUrl}/user/register`);
+      console.log("Email:", email);
+      console.log("Type:", role === "requester" ? "consumer" : "provider");
+
+      const fallback = "unknown";
+ 
+      const registrationPayload = {
+        email: email,
+        username: email.includes("@") ? email.split("@")[0] : email,
+        password: password,
+        name: name,
+        type: role === "requester" ? "consumer" : "provider",
+      
+        incorporation: additionalData?.incorporation?.trim() || fallback,
+        address: additionalData?.address?.trim() || fallback,
+        position_title: additionalData?.positionTitle?.trim() || fallback,
+        vat_no: additionalData?.VAT_No?.trim() || fallback,
+        phone: additionalData?.phone?.trim() || fallback,
+        organization: additionalData?.organization || [fallback],
+      };
+
+      console.log(`Registration payload: ${JSON.stringify(registrationPayload)}`);
 
       const apiResponse = await fetch(
         `${externalApiUrl}/user/register?master_password_input=${encodedMasterPassword}`,
@@ -261,61 +807,29 @@ router.post("/register", async (req, res) => {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            username_email: email,
-            password: password,
-            name: name,
-            type: role === "requester" ? "consumer" : "provider",
-          }),
+          body: JSON.stringify(registrationPayload),
         }
       );
 
-      console.log("📡 Negotiation API response status:", apiResponse.status);
+      console.log("API response status:", apiResponse.status);
 
       apiRegistrationSuccess = apiResponse.ok;
       if (apiResponse.ok) {
-        const successData = await apiResponse.json();
-        console.log("✅ Negotiation API registration successful:", successData);
+        const successData = (await apiResponse.json()) as UserRecord;
+        userRecord = successData;
+        console.log("API registration successful:", successData);
 
-        // Extract MongoDB user ID from the response
-        if (
-          successData &&
-          (successData.user_id || successData.id || successData._id)
-        ) {
-          mongoUserId =
-            successData.user_id || successData.id || successData._id;
-          console.log("🎯 MongoDB user ID received:", mongoUserId);
-
-          // Update the Firebase user document with the MongoDB user ID
-          console.log("💾 Updating Firebase with mongoUserId...");
-          await db.collection(collection).doc(userRecord.uid).update({
-            mongoUserId: mongoUserId,
-            apiRegistrationSuccess: true,
-            apiRegistrationDate: new Date().toISOString(),
-          });
-          console.log("✅ Firebase updated with mongoUserId");
-
-          console.log(
-            "✅ MongoDB user ID stored in Firebase for user:",
-            userRecord.uid
-          );
-        } else {
-          console.warn("⚠️ No user ID found in API response:", successData);
-        }
       } else {
-        const errorData = await apiResponse.json();
-        console.error("❌ External API registration failed:", {
+        const errorData = await apiResponse.json() || "";
+        console.error("External API registration failed:", {
           status: apiResponse.status,
           statusText: apiResponse.statusText,
           error: errorData,
-          email: email,
-          name: name,
-          role: role,
-          type: role === "requester" ? "consumer" : "provider",
+          payload: JSON.stringify(registrationPayload)
         });
       }
     } catch (apiError: any) {
-      console.error("❌ External API registration exception:", {
+      console.error("External API registration exception:", {
         error: apiError.message,
         stack: apiError.stack,
         email: email,
@@ -323,15 +837,21 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    if (!userRecord) {
+      return res.status(500).json({
+        success: false,
+        error: "Unable to retrieve new user record",
+      });
+    }
+
     res.status(201).json({
       success: true,
       user: {
-        uid: userRecord.uid,
+        uid: userRecord._id,
         email: userRecord.email,
         role,
         userData,
         apiRegistrationSuccess,
-        mongoUserId,
       },
     });
   } catch (error: any) {
@@ -344,7 +864,7 @@ router.post("/register", async (req, res) => {
 });
 
 // POST /api/auth/logout - User logout
-router.post("/logout", async (req, res) => {
+router.post("/logout", async (_req, res) => {
   try {
     // For server-side logout, we just return success
     // Client will handle clearing local storage
@@ -366,19 +886,19 @@ router.get("/user/:uid", async (req, res) => {
   try {
     const { uid } = req.params;
 
-    const ownerDoc = await db.collection("owners").doc(uid).get();
-    const requesterDoc = await db.collection("requesters").doc(uid).get();
+    const userDoc = await db.collection("users").findOne({_id: {$eq: new ObjectId(uid)}});
 
     let role = "unknown";
-    let userData = null;
 
-    if (ownerDoc.exists) {
-      role = "owner";
-      userData = ownerDoc.data();
-    } else if (requesterDoc.exists) {
-      role = "requester";
-      userData = requesterDoc.data();
-    } else {
+    if (userDoc) {
+      if (userDoc.type === "consumer") {
+        role = "requester";
+      }
+      else if (userDoc.type === "provider") {
+        role = "owner";
+      }
+    }
+    else {
       return res.status(404).json({
         error: "User not found",
         success: false,
@@ -389,8 +909,7 @@ router.get("/user/:uid", async (req, res) => {
       success: true,
       user: {
         uid,
-        role,
-        userData,
+        role
       },
     });
   } catch (error: any) {
@@ -403,16 +922,16 @@ router.get("/user/:uid", async (req, res) => {
 });
 
 // GET /api/auth/owners - Get all owners
-router.get("/owners", async (req, res) => {
+router.get("/owners", async (_req, res) => {
   try {
-    const ownersSnapshot = await db.collection("owners").get();
+    const ownersSnapshot = await db.collection("users").find({type: {$eq: "provider"}}).toArray();
     const owners: { id: string; email: string; name?: string }[] = [];
 
     ownersSnapshot.forEach((doc) => {
-      const data = doc.data();
+      const data = doc;
       if (data.email) {
         owners.push({
-          id: doc.id,
+          id: doc._id.toString(),
           email: data.email,
           name: data.name || "Unknown",
         });
@@ -432,11 +951,27 @@ router.get("/owners", async (req, res) => {
   }
 });
 
-// DELETE /api/auth/user/:email - Delete user from both Firebase and external API
+// DELETE /api/auth/user/:email - Delete user from external API
 router.delete("/user/:email", async (req, res) => {
   try {
     const { email } = req.params;
-    const { masterPassword } = req.body;
+
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+          return res.status(401).json({
+            success: false,
+            error: "Missing bearer token",
+          });
+        }
+    
+    const token = req.headers.authorization.substring(7);
+    const verification = await verify(token);
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
 
     if (!email) {
       return res.status(400).json({
@@ -445,39 +980,33 @@ router.delete("/user/:email", async (req, res) => {
       });
     }
 
-    console.log("Deleting user:", email);
+    const userDoc = await db.collection("users").findOne({email: email});
 
-    // First, get the user's UID from Firebase to delete from Firestore
-    let userRecord = null;
-    let userUid = null;
-
-    try {
-      userRecord = await admin.auth().getUserByEmail(email);
-      userUid = userRecord.uid;
-    } catch (authError) {
-      console.log("User not found in Firebase Auth:", authError);
+    if (!userDoc) {
+      return res.status(200).json({
+        success: true,
+        message: "User deletion completed"
+      })
     }
+
+    const userId = userDoc._id.toString();
+    const userType = userDoc.type;
+    console.log("Deleting user:", email);
 
     // Delete from external API first (if it exists there)
     let externalApiDeleteSuccess = false;
     try {
-      const externalApiUrl =
-        process.env.EXTERNAL_API_BASE_URL ||
-        "https://dips.soton.ac.uk/negotiation-api";
-      const masterPasswordParam =
-        masterPassword ||
-        process.env.EXTERNAL_API_MASTER_PASSWORD ||
-        "5hnd..jk4ne!kwjs?wnsmmf";
-      const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+      const externalApiUrl = process.env.USER_MANAGEMENT_SERVICE_API_URL || ""
 
       // First, get the user ID from external API by email (we may need to login first to get user ID)
       // For now, we'll try to delete by email directly if the API supports it
       const deleteResponse = await fetch(
-        `${externalApiUrl}/user/${email}?master_password_input=${encodedMasterPassword}`,
+        `${externalApiUrl}/user/delete/${userId}`,
         {
           method: "DELETE",
           headers: {
             "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
           },
         }
       );
@@ -490,6 +1019,45 @@ router.delete("/user/:email", async (req, res) => {
       if (deleteResponse.ok) {
         console.log("User deleted from external API successfully");
         externalApiDeleteSuccess = true;
+        if (userType === "provider") {
+          const updateRequests = await db.collection("requests").updateMany(
+            { owners: userId },
+            { $pull: { 
+              owners: userId,
+              ownersPending: userId,
+              ownersAccepted: userId,
+              ownersRejected: userId
+            } } as any
+          );
+
+          if (!updateRequests) {
+            res.json({
+              success: true,
+              message: "User deletion completed",
+              details: {
+                externalApiDeleted: externalApiDeleteSuccess,
+              },
+            });
+          }
+        }
+        else if (userType === "consumer") {
+          const deleteRequests = await db.collection("requests").deleteMany({
+            "requester.requesterId" : userId 
+          });
+
+          if (!deleteRequests) {
+            console.log(`Request deletion completed for ${userId}`);
+            res.json({
+              success: true,
+              message: "Request deletion completed",
+              details: {
+                externalApiDeleted: externalApiDeleteSuccess,
+              },
+            });
+          }
+        }
+        
+
       } else {
         const errorText = await deleteResponse.text();
         console.log("External API delete failed:", errorText);
@@ -498,55 +1066,11 @@ router.delete("/user/:email", async (req, res) => {
       console.log("External API delete failed with exception:", apiError);
     }
 
-    // Delete from Firebase Auth
-    let firebaseAuthDeleted = false;
-    if (userRecord) {
-      try {
-        await admin.auth().deleteUser(userUid);
-        firebaseAuthDeleted = true;
-        console.log("User deleted from Firebase Auth");
-      } catch (authDeleteError) {
-        console.log(
-          "Failed to delete user from Firebase Auth:",
-          authDeleteError
-        );
-      }
-    }
-
-    // Delete from Firestore (check both collections)
-    let firestoreDeleted = false;
-    if (userUid) {
-      try {
-        const ownerDoc = db.collection("owners").doc(userUid);
-        const requesterDoc = db.collection("requesters").doc(userUid);
-
-        const ownerExists = (await ownerDoc.get()).exists;
-        const requesterExists = (await requesterDoc.get()).exists;
-
-        if (ownerExists) {
-          await ownerDoc.delete();
-          firestoreDeleted = true;
-          console.log("User deleted from owners collection");
-        }
-
-        if (requesterExists) {
-          await requesterDoc.delete();
-          firestoreDeleted = true;
-          console.log("User deleted from requesters collection");
-        }
-      } catch (firestoreError) {
-        console.log("Failed to delete user from Firestore:", firestoreError);
-      }
-    }
-
     res.json({
       success: true,
       message: "User deletion completed",
       details: {
         externalApiDeleted: externalApiDeleteSuccess,
-        firebaseAuthDeleted,
-        firestoreDeleted,
-        userFoundInFirebase: userRecord !== null,
       },
     });
   } catch (error: any) {
@@ -558,7 +1082,397 @@ router.delete("/user/:email", async (req, res) => {
   }
 });
 
+
+//The link in the emails we send to new users created by a requester points to this API call.
+//It will create a new user, login the user and redirect to the page where the user can accept or reject the request.
+//The provided token should contain all the relevant information such as the requestId, the user's email address.
+router.get("/verify/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { payload } = await jwtVerify(token, secret);
+    if (!payload) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+    const decoded_token = decodeJwt(token);
+    console.log("Decoded token payload is:");
+    console.log(decoded_token);
+
+    if (!decoded_token.owner) {
+      return res.status(401).json({
+        error: "Owner data missing",
+        success: false,
+      });
+    }
+
+    if (!decoded_token.requestId) {
+      return res.status(401).json({
+        error: "Request id missing",
+        success: false,
+      });
+    }
+
+    const owner = decoded_token.owner as {email: string, name?: string, id?: string};
+    const requestId = decoded_token.requestId;
+    const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Token verification failed",
+        success: false,
+      });
+    }
+
+    if (verification.used) {
+      return res.status(401).json({
+        error: "Token already used",
+        success: false,
+      });
+    }
+
+    if (Date.now() > verification.expiresAt) {
+      // Workflow to send another verification email if the token is expired.
+      const language = decoded_token.language ? decoded_token.language.toString() : "en";  
+      const random_token = crypto.randomBytes(32).toString("hex");
+      const token_payload = {
+        owner: owner,
+        requestId: requestId,
+        language: language,
+        action: "confirm",
+        token: random_token,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        used: false
+      }
+      const email_token = await new SignJWT(token_payload)
+        .setProtectedHeader({alg: "HS256"})
+        .sign(secret);
+
+      // Delete the expired token.
+      await db.collection("tokens").deleteOne({token: {$eq: decoded_token.token}});
+      // Insert the new token.
+      const insert_token = await db.collection("tokens").insertOne(token_payload);
+      const request_doc = await db.collection<RequestData>("requests").findOne({_id: new ObjectId(requestId.toString())});
+      
+      if (insert_token && request_doc) {
+        const email_content = ExpiredVerificationEmail(request_doc, email_token, language);
+
+        const email_details = {
+            from: email_sender,
+            to: owner.email,
+            subject: 'Change Password',
+            html: email_content,
+          }
+        await sendTestEmail(email_details);
+
+        return res.status(401).json({
+          error: "Token is expired. A new email has been sent.",
+          success: false,
+        })
+      }
+
+      return res.status(401).json({
+        error: "Token is expired",
+        success: false,
+      });
+    }
+
+    const lang = verification.language || "en";
+    const redirect_url = process.env.FRONTEND_URL || "https://dips.soton.ac.uk/consent-manager"
+
+    if (owner.id) { // Case where the user has an existing account. We redirect the user to login then the request details.
+      await db.collection("tokens").updateOne({token: {$eq: decoded_token.token}}, {$set: {used: true}}); //Mark the token as used.
+      const encodedRedirectURL = encodeURIComponent(`/ownerBase/ownerPendingRequestsDetails/${requestId}`);
+      console.log(`Encoded redirect URL is ${encodedRedirectURL}`);
+      console.log(`Redirecting to ${redirect_url}/login?redirect=${encodedRedirectURL}`);
+      res.redirect(
+        `${redirect_url}/login?redirect=${encodedRedirectURL}`
+      )
+      return;
+    }
+
+    console.log("Creating new user");
+    try {
+      const email = owner.email;
+
+      let uid = null;
+      let userRecord = null;
+      try {
+        const externalApiUrl =
+          process.env.USER_MANAGEMENT_SERVICE_API_URL ||
+          "https://dips.soton.ac.uk/negotiation-api";
+        const masterPasswordParam = process.env.MASTER_PASSWORD!;
+
+        const encodedMasterPassword = encodeURIComponent(masterPasswordParam);
+
+        const fallback = "unknown";
+        const randomPassword = "Random_Password_For_Testing_13!";
+
+        const registrationPayload = {
+          email: email,
+          username: email.includes("@") ? email.split("@")[0] : email,
+          password: randomPassword, // Ideally this should be null so we can create users who can only login through an email link.
+          name: owner.name || `${fallback} ${fallback}`, // The user management service takes this value and splits it into first name and last name. We should model it otherwise.
+          type: "provider",
+        
+          incorporation: decoded_token.incorporation || fallback,
+          address: decoded_token.address || fallback,
+          position_title: decoded_token?.positionTitle || fallback,
+          vat_no: decoded_token?.VAT_No || fallback,
+          phone: decoded_token?.phone || fallback,
+          organization: decoded_token?.organization || [fallback],
+        };
+
+        const apiResponse = await fetch(
+          `${externalApiUrl}/user/register?master_password_input=${encodedMasterPassword}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(registrationPayload),
+          }
+        );
+
+        console.log("API response status:", apiResponse.status);
+
+        if (apiResponse.ok) {
+          const successData = (await apiResponse.json()) as UserRecord;
+          userRecord = successData;
+          console.log("User Management Service API registration successful:", successData);
+
+          // Extract MongoDB user ID from the response
+          if (successData && (successData._id)) {
+            uid = successData._id;
+            console.log("MongoDB user ID received:", uid);
+          } else {
+            console.warn("No user ID found in API response:", successData);
+            return res.status(500).json({
+              success: false,
+              error: "No user ID found in API response.",
+            })
+          }
+
+          await db.collection("tokens").updateOne({token: {$eq: decoded_token.token}}, {$set: {used: true}}); //Mark the token as used.
+          await db.collection("requests").updateOne({'_id': new ObjectId(requestId.toString())}, {$addToSet: {owners: uid, ownersPending: uid}}); //Update the request to add the new user as an owner and pending owner.
+        
+          const keycloak_login_response = await login(email, randomPassword);
+
+          if (!keycloak_login_response) {
+            return res.status(401).json({
+              error: "Keycloak login failed",
+              success: false,
+            });
+          }
+
+          const access_token = keycloak_login_response.access_token;
+          console.log(
+            "External API login successful:",
+            access_token.substring(0, 50)
+          );
+
+
+          const userData = {
+            uid: userRecord._id, 
+            role: "owner", 
+            email: userRecord.email,
+            displayName: userRecord.name,
+            userData: {...userRecord}};
+          const encodedUser = encodeURIComponent(JSON.stringify(userData));
+          const encodedToken = encodeURIComponent(access_token);
+
+          console.log(`Attempting to send email to ${email}`);
+          const random_token = crypto.randomBytes(32).toString("hex");
+          const token_payload = {
+            email: email,
+            action: "change-password",
+            token: random_token,
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+            used: false
+          }
+          const email_token = await new SignJWT(token_payload)
+            .setProtectedHeader({alg: "HS256"})
+            .sign(secret);
+
+          const insert_token = await db.collection("tokens").insertOne(token_payload);
+          
+          if (insert_token) {
+            const email_content = ChangePasswordEmail(email_token, lang);
+
+            const email_details = {
+                from: email_sender,
+                to: email,
+                subject: 'Change Password',
+                html: email_content,
+              }
+            const email_result = await sendTestEmail(email_details);
+
+            console.log(email_result.success);
+          }
+
+          req.session.userUid = uid;
+          res.redirect(
+            `${redirect_url}/ownerBase/ownerPendingRequestsDetails/${requestId}` +
+            `?auth_user=${encodedUser}` +
+            `&auth_token=${encodedToken}`
+          );
+          //TODO: Possibly send email to user that contains their random password, or action links.
+        } else {
+          const errorData = await apiResponse.json();
+          console.error("External API registration failed:", {
+            status: apiResponse.status,
+            statusText: apiResponse.statusText,
+            error: errorData,
+            email: email,
+            role: "owner",
+            type: "provider",
+          });
+        }
+
+      } catch (apiError: any) {
+        console.error("External API registration exception:", {
+          error: apiError.message,
+          stack: apiError.stack,
+          email: email,
+        });
+      }
+
+      
+    }
+    catch(error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message || "Registration failed",
+      })
+    }
+  }
+  catch(error: any) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Token verification failed",
+    })
+  }
+}
+);
+
+router.get("/decode/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { payload } = await jwtVerify(token, secret);
+    if (!payload) {
+      return res.status(401).json({
+        error: "Invalid token",
+        success: false,
+      });
+    }
+    const decoded_token = decodeJwt(token);
+    console.log("Decoded token payload is:");
+    console.log(decoded_token);
+
+    if (!decoded_token.email) {
+      return res.status(401).json({
+        error: "Email address missing",
+        success: false,
+      });
+    }
+    
+    const verification = await db.collection("tokens").findOne({token: {$eq: decoded_token.token}});
+
+    if (!verification) {
+      return res.status(401).json({
+        error: "Token verification failed",
+        success: false,
+      });
+    }
+
+    if (verification.used) {
+      return res.status(401).json({
+        error: "Token already used",
+        success: false,
+      });
+    }
+
+    if (Date.now() > verification.expiresAt) {
+      //TODO: Renew token?
+      return res.status(401).json({
+        error: "Token is expired",
+        success: false,
+      });
+    }
+
+    res.json({...decoded_token, success: true})
+  }
+  catch(error: any) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Token verification failed",
+    })
+  }
+}
+);
+
+router.post("/forgot-password", async (req, res) => {
+  try {
+    if (!req.body.email) {
+      return res.status(401).json({
+        error: "Email address is required.",
+        success: false,
+      });
+    }
+
+    const lang = req.body.language || "en";
+
+    const email = req.body.email;
+
+    console.log(`Attempting to send email to ${email}`);
+    const random_token = crypto.randomBytes(32).toString("hex");
+    const token_payload = {
+      email: email,
+      action: "change-password",
+      token: random_token,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+      used: false
+    }
+    const email_token = await new SignJWT(token_payload)
+      .setProtectedHeader({alg: "HS256"})
+      .sign(secret);
+
+    const insert_token = await db.collection("tokens").insertOne(token_payload);
+    
+    if (insert_token) {
+      const email_content = ChangePasswordEmail(email_token, lang);
+
+      const email_details = {
+          from: email_sender,
+          to: email,
+          subject: 'Change Password',
+          html: email_content,
+        }
+      const email_result = await sendTestEmail(email_details);
+
+      console.log(email_result.success);
+      // Should respond successfully even if user doesn't exist.
+      res.json({
+        success: true,
+        message: "Email sent successfully!",
+      });
+    }
+  }
+  catch (error) {
+    console.error("Error sending email to reset password:", error);
+    res.status(500).json({
+      error: "Failed to send email to reset password.",
+      success: false,
+    })
+  }
+});
+
 // GET /api/auth/token/:token - Authenticate with external API token and redirect
+// TODO: Test this
 router.get("/token/:token", async (req, res) => {
   try {
     const { token } = req.params;
@@ -595,7 +1509,7 @@ router.get("/token/:token", async (req, res) => {
     console.log("Using JWT token:", actualJwtToken);
 
     // Decode the JWT to get user email (without verification)
-    let userEmail = null;
+    let keycloak_sub = null;
 
     try {
       // JWT has 3 parts separated by dots: header.payload.signature
@@ -606,7 +1520,7 @@ router.get("/token/:token", async (req, res) => {
           Buffer.from(jwtParts[1], "base64").toString()
         );
         console.log("JWT payload:", payload);
-        userEmail = payload.sub; // 'sub' usually contains the email
+        keycloak_sub = payload.sub; // 'sub' usually contains the email
       }
     } catch (jwtError) {
       console.error("JWT decode error:", jwtError);
@@ -616,7 +1530,7 @@ router.get("/token/:token", async (req, res) => {
       });
     }
 
-    if (!userEmail) {
+    if (!keycloak_sub) {
       console.error("Could not extract email from JWT");
       return res.status(401).json({
         error: "Could not extract user email from token",
@@ -624,117 +1538,48 @@ router.get("/token/:token", async (req, res) => {
       });
     }
 
-    console.log("Extracted email from JWT:", userEmail);
-
-    // Determine role by checking Firestore collections (same logic as login endpoint)
-    const usersSnapshot = await db
-      .collection("owners")
-      .where("email", "==", userEmail)
-      .get();
-    const requestersSnapshot = await db
-      .collection("requesters")
-      .where("email", "==", userEmail)
-      .get();
+    console.log("Extracted email from JWT:", keycloak_sub);
 
     let role = "owner"; // Default fallback
     let userData = null;
     let userUid = null;
     let displayName = "Marketing Audit User";
 
-    if (!usersSnapshot.empty) {
-      role = "owner";
-      const doc = usersSnapshot.docs[0];
-      userData = doc.data();
-      userUid = doc.id;
-      displayName = userData?.name || "Marketing Audit User";
-    } else if (!requestersSnapshot.empty) {
-      role = "requester";
-      const doc = requestersSnapshot.docs[0];
-      userData = doc.data();
-      userUid = doc.id;
-      displayName = userData?.name || "Marketing Audit User";
-    }
-
     console.log(
       "Determined role for token auth:",
       role,
       "for email:",
-      userEmail
+      keycloak_sub
     );
 
-    // Check if user has MongoDB user ID, if not, get it from external API
-    if (userData && !userData.mongoUserId && actualJwtToken && userUid) {
-      console.log(
-        "🔍 User missing MongoDB ID during token auth, fetching from external API..."
+    try {
+      const detailsForm = new URLSearchParams({keycloak_sub: keycloak_sub});
+      const userManagementServiceURL = process.env.USER_MANAGEMENT_SERVICE_API_URL || "";
+      const userDetailsResponse = await fetch(
+        `${userManagementServiceURL}/user/details/?${detailsForm}`,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${actualJwtToken}` },
+        }
       );
 
-      try {
-        const externalApiUrl =
-          process.env.EXTERNAL_API_BASE_URL ||
-          "https://dips.soton.ac.uk/negotiation-api";
-        const userDetailsResponse = await fetch(
-          `${externalApiUrl}/user/details/`,
-          {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${actualJwtToken}`,
-            },
-          }
-        );
-
-        if (userDetailsResponse.ok) {
-          const userDetails = await userDetailsResponse.json();
-          console.log(
-            "📋 User details from external API (token auth):",
-            userDetails
-          );
-
-          // Extract MongoDB user ID
-          const mongoUserId =
-            userDetails.user_id || userDetails.id || userDetails._id;
-
-          if (mongoUserId) {
-            console.log(
-              "🎯 MongoDB user ID found during token auth:",
-              mongoUserId
-            );
-
-            // Update Firebase user document with MongoDB user ID
-            const collection = role === "owner" ? "owners" : "requesters";
-            await db.collection(collection).doc(userUid).update({
-              mongoUserId: mongoUserId,
-              apiRegistrationSuccess: true,
-              mongoIdAddedOnTokenAuth: true,
-              mongoIdAddedDate: new Date().toISOString(),
-            });
-
-            console.log(
-              "✅ MongoDB user ID stored in Firebase during token auth"
-            );
-
-            // Update userData in memory
-            userData = { ...userData, mongoUserId };
-          } else {
-            console.warn(
-              "⚠️ No MongoDB user ID found in external API user details (token auth)"
-            );
-          }
-        } else {
-          console.warn(
-            "⚠️ Failed to get user details from external API during token auth:",
-            userDetailsResponse.status
-          );
-        }
-      } catch (userDetailsError) {
-        console.warn(
-          "⚠️ Error fetching user details from external API during token auth:",
-          userDetailsError
+      if (userDetailsResponse.ok) {
+        const userDetails = await userDetailsResponse.json();
+        userData = userDetails;
+        console.log(
+          "User details from external API (token auth):",
+          userDetails
         );
       }
-    } else if (userData?.mongoUserId) {
-      console.log(
-        "✅ User already has MongoDB user ID during token auth:",
-        userData.mongoUserId
+      else {
+        console.warn(
+          "⚠️ No MongoDB user ID found in external API user details (token auth)"
+        );
+      }
+    } catch (userDetailsError) {
+      console.warn(
+        "Error fetching user details from external API during token auth:",
+        userDetailsError
       );
     }
 
@@ -743,13 +1588,13 @@ router.get("/token/:token", async (req, res) => {
       uid:
         userUid ||
         "external_user_" +
-          Buffer.from(userEmail).toString("base64").substr(0, 10),
-      email: userEmail,
+          Buffer.from(keycloak_sub).toString("base64").substr(0, 10),
+      email: keycloak_sub,
       displayName: displayName,
       role: role,
       userData: userData || {
         name: displayName,
-        email: userEmail,
+        email: keycloak_sub,
       },
       apiToken: actualJwtToken, // Use the actual JWT token
     };

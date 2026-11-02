@@ -5,7 +5,7 @@ import React, {
   useEffect,
   ReactNode,
 } from "react";
-import { login as apiLogin, logout as apiLogout } from "./services/api";
+import { login as apiLogin, logout as apiLogout, emailLogin as apiEmailLogin } from "./services/api";
 
 // --- Define user profile type ---
 interface UserProfile {
@@ -32,6 +32,7 @@ interface AuthContextType {
   userData: UserProfile | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  emailLogin: (email: string, mode: string, actionCode: string, continueURL: string) => Promise<void>; 
 }
 
 // --- Create context ---
@@ -182,6 +183,55 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  const emailLogin = async (email: string, mode: string, actionCode: string, continueURL: string) => {
+    try {
+      let authUser : AuthUser;
+      const apiLogin = await apiEmailLogin(email);
+      console.log("Mode is:",mode);
+      console.log("Action code is:",actionCode);
+      console.log("Continue URL is:",continueURL);
+      if (apiLogin.success) {
+        authUser = {
+          uid: apiLogin.user.uid,
+          email: apiLogin.user.email,
+          displayName: apiLogin.user.displayName,
+          role: "owner",
+          userData: apiLogin.user.userData
+        };
+        setUser(authUser);
+        setRole("owner");
+        setUserData(apiLogin.user.userData);
+
+        // Store in localStorage for persistence
+        localStorage.setItem("user", JSON.stringify(authUser));
+        let token;
+        const apiToken = apiLogin.user.apiToken;
+          if (
+            typeof apiToken === "object" &&
+            apiToken.access_token
+          ) {
+            token = apiToken.access_token;
+            console.log("Extracted access_token from apiToken object");
+          } else {
+            token = apiToken;
+            console.log("Using apiToken as-is (not an object)");
+          }
+          console.log(
+            "Storing token in localStorage:",
+            token.substring(0, 50) + "..."
+          );
+          localStorage.setItem("token", token);
+      }  
+      else {
+        throw new Error(apiLogin.error || "Login failed");
+      }
+  } 
+    catch (error) {
+      console.error("Login error:", error);
+      throw error;
+    }
+  };
+
   const logout = async () => {
     try {
       await apiLogout();
@@ -200,7 +250,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   if (loading) return null;
 
   return (
-    <AuthContext.Provider value={{ user, role, userData, login, logout }}>
+    <AuthContext.Provider value={{ user, role, userData, login, logout, emailLogin }}>
       {children}
     </AuthContext.Provider>
   );

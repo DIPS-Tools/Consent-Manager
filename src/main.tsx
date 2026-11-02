@@ -20,33 +20,38 @@ import OwnerRegister from "./components/Login/OwnerRegister";
 import RequesterRegister from "./components/Login/RequesterRegister";
 import OwnerOtp from "./components/Login/OwnerOtp";
 import OwnerPendingRequests from "./components/Owner/OwnerPendingRequests";
-import OwnerPendingRequestsDetails from "./components/Owner/OwnerPendingRequestDetails";
+import OwnerPendingRequestDetails from "./components/Owner/OwnerPendingRequestDetails";
 import OwnerApprovedRequests from "./components/Owner/OwnerApprovedRequests";
-import OwnerApprovedRequestsDetails from "./components/Owner/OwnerApprovedRequestDetails";
+import OwnerApprovedRequestDetails from "./components/Owner/OwnerApprovedRequestDetails";
 import OwnerOtherRequests from "./components/Owner/OwnerOtherRequests";
 import OwnerOtherRequestsDetails from "./components/Owner/OwnerOtherRequestDetails";
 import SendDraftRequest from "./components/Requester/SendDraftRequest";
-import RequesterPendingRequestsDetails from "./components/Requester/RequesterPendingRequestDetails";
+import RequesterPendingRequestDetails from "./components/Requester/RequesterPendingRequestDetails";
 import EditDraftRequest from "./components/Requester/EditDraftRequest";
 import PrivateRoute from "./PrivateRoute";
 import UploadOntology from "./components/Requester/UploadOntology";
 import Unauthorized from "./components/Unauthorized";
-import RequesterSentRequestsDetails from "./components/Requester/RequesterSentRequestDetails";
+import RequesterSentRequestDetails from "./components/Requester/RequesterSentRequestDetails";
 import RequesterProfile from "./components/Requester/Profile/RequesterProfile";
+import OwnerProfile from "./components/Owner/Profile/OwnerProfile";
+import EmailLogin from "./components/Login/EmailLogin";
 import Test from "./Test";
 import ImportRequest from "./components/Requester/ImportRequest";
 import UserDetails from "./API/UserDetails";
 // Context
 import { AuthProvider } from "./AuthContext";
 import { IframeProvider } from "./IframeContext";
+import "./i18n";
 
 import AllUsers from "./API/AllUsers";
+import ChangePassword from "./components/Login/ChangePassword";
+import ForgotPassword from "./components/Login/ForgotPassword";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AuthProvider>
       <IframeProvider>
-        <Router basename="/consent-manager/">
+        <Router basename={import.meta.env.BASE_URL}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/getStarted" element={<GetStarted />} />
@@ -58,6 +63,9 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/test" element={<Test />} />
             <Route path="/allUsers" element={<AllUsers />} />
             <Route path="/userDetails" element={<UserDetails />} />
+            <Route path="/emailLogin" element={<EmailLogin />} />
+            <Route path="/changePassword" element={<ChangePassword/>} />
+            <Route path="/forgotPassword" element={<ForgotPassword/>} />
 
             {/* owner */}
             <Route
@@ -75,7 +83,7 @@ createRoot(document.getElementById("root")!).render(
               />
               <Route
                 path="ownerPendingRequestsDetails/:requestId"
-                element={<OwnerPendingRequestsDetails />}
+                element={<OwnerPendingRequestDetails />}
               />
               <Route
                 path="ownerApprovedRequests"
@@ -83,7 +91,7 @@ createRoot(document.getElementById("root")!).render(
               />
               <Route
                 path="ownerApprovedRequestsDetails/:requestId"
-                element={<OwnerApprovedRequestsDetails />}
+                element={<OwnerApprovedRequestDetails />}
               />
               <Route
                 path="ownerOtherRequests"
@@ -92,6 +100,10 @@ createRoot(document.getElementById("root")!).render(
               <Route
                 path="ownerOtherRequestsDetails/:requestId"
                 element={<OwnerOtherRequestsDetails />}
+              />
+              <Route
+                path="ownerProfile/:requestId"
+                element={<OwnerProfile />}
               />
             </Route>
 
@@ -119,7 +131,7 @@ createRoot(document.getElementById("root")!).render(
 
               <Route
                 path="requesterPendingRequestsDetails"
-                element={<RequesterPendingRequestsDetails />}
+                element={<RequesterPendingRequestDetails />}
               />
               <Route
                 path="editDraftRequest/:requestId"
@@ -128,7 +140,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="uploadOntology" element={<UploadOntology />} />
               <Route
                 path="requesterSentRequestsDetails/:requestId"
-                element={<RequesterSentRequestsDetails />}
+                element={<RequesterSentRequestDetails />}
               />
               <Route
                 path="requesterProfile/:requestId"

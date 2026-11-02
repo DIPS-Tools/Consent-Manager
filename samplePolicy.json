@@ -1,0 +1,92 @@
+{
+  "@context": {
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "dpv": "https://w3id.org/dpv/owl#",
+    "foaf": "http://xmlns.com/foaf/0.1/"
+  },
+  "@id": "http://example.com/policy:6161",
+  "@type": "odrl:Policy",
+  "odrl:permission": [
+    {
+      "odrl:action": {
+        "rdf:value": {
+          "@id": "http://www.w3.org/ns/odrl/2/print"
+        },
+        "odrl:refinement": [{
+          "odrl:leftOperand": {
+            "@id": "http://www.w3.org/ns/odrl/2/resolution"
+          },
+          "odrl:operator": {
+            "@id": "http://www.w3.org/ns/odrl/2/lteq"
+          },
+          "odrl:rightOperand": 1200,
+          "odrl:unit": {
+            "@value": "http://dbpedia.org/resource/Dots_per_inch",
+            "@type": "xsd:string"
+          }
+        }]
+      },
+      "odrl:assignee": {
+        "@id": "http://example.com/org:John"
+      },
+      "odrl:target": {
+        "odrl:source":{
+          "@id": "http://example.com/document:1234"
+        }  
+      },
+      "odrl:constraint": [{
+        "@type": "http://www.w3.org/ns/odrl/2/Constraint",
+        "odrl:leftOperand": {
+          "@id": "https://w3id.org/dpv/owl#purpose"
+        },
+        "odrl:operator": {
+          "@id": "http://www.w3.org/ns/odrl/2/eq"
+        },
+        "odrl:rightOperand": "https://www.cactusweb.gr/vocab/Personal_Info_Identification"
+      }]
+    },
+    {
+      "odrl:action": {
+        "rdf:value": {
+          "@id": "http://www.w3.org/ns/odrl/2/create"
+        }
+      },
+      "odrl:assignee": {
+        "odrl:source": {
+          "@id": "http://example.com/org:AccountManager"
+        },
+        "odrl:refinement": [{
+          "odrl:leftOperand": {
+            "@id": "http://www.w3.org/ns/odrl/2/adminLevel"
+          },
+          "odrl:operator": {
+            "@id": "http://www.w3.org/ns/odrl/2/gt"
+          },
+          "odrl:rightOperand": 10
+        }]
+      },
+      "odrl:target": {
+        "odrl:source":{
+          "@id": "http://example.com/document:1234"
+        }  
+      },
+      "odrl:constraint": [{
+        "@type": "http://www.w3.org/ns/odrl/2/Constraint",
+        "odrl:leftOperand": {
+          "@id": "https://w3id.org/dpv/owl#purpose"
+        },
+        "odrl:operator": {
+          "@id": "http://www.w3.org/ns/odrl/2/eq"
+        },
+        "odrl:rightOperand": "https://www.cactusweb.gr/vocab/Personal_Info_Identification"
+      }]
+    }
+  ],
+  "odrl:profile": {
+    "@id": "http://example.com/odrl:profile:10"
+  }
+}

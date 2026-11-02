@@ -9,9 +9,11 @@ COPY . .
 ARG VITE_API_BASE_URL
 ARG VITE_NEGOTIATION_BASE_URL
 ARG VITE_USE_EMULATOR
+ARG VITE_BASE_PATH
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL \
     VITE_NEGOTIATION_BASE_URL=$VITE_NEGOTIATION_BASE_URL \
-    VITE_USE_EMULATOR=$VITE_USE_EMULATOR
+    VITE_USE_EMULATOR=$VITE_USE_EMULATOR \
+    VITE_BASE_PATH=$VITE_BASE_PATH
 
 RUN npm run build
 
@@ -24,7 +26,7 @@ COPY --from=builder /app/dist ./dist
 COPY server ./server
 COPY vite.config.ts ./vite.config.ts
 COPY src ./src
+COPY emails ./emails
 
 EXPOSE 5173
 CMD ["npm", "run", "serve-static"]
-

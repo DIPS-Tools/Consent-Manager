@@ -1,55 +1,16 @@
 import styles from "../../css/OwnerPendingRequestsDetails.module.css";
 import { Link, useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { getRequest } from "../../services/api";
-import { getRequestPermissions } from "../../utils/policyParser";
+import { getContract, getRequest, downloadContract as apiDownloadContract } from "../../services/api";
+import { Request } from "../Interfaces/Requests";
+import * as rdflib from "rdflib";
 
 // components
 import LoadingSpinner from "../LoadingSpinner";
-
-interface Refinement {
-  attribute: string;
-  instance: string;
-  value: string;
-}
-
-interface Permission {
-  dataset: string;
-  datasetRefinements: Refinement[];
-  action: string;
-  actionRefinements: Refinement[];
-  purpose: string;
-  purposeRefinements: Refinement[];
-  constraintRefinements: Refinement[];
-  constraints?: Array<{
-    leftOperand: string;
-    operator: string;
-    rightOperand: any;
-    description: string;
-  }>;
-  assignees?: Array<{
-    source: string;
-    refinements?: Array<{
-      leftOperand: string;
-      operator: string;
-      rightOperand: any;
-      description: string;
-    }>;
-  }>;
-}
-
-interface Request {
-  id: string;
-  requestName: string;
-  requester: {
-    requesterName: string;
-    requesterEmail: string;
-  };
-  policy?: any;
-  status: string;
-  owners: string[];
-  contractId?: string;
-}
+import renderPermissions from "../../utils/renderPermissions";
+import { useTranslation } from "react-i18next";
+import { fetchOntologies, getAttributeDropdownValue, getFeatureDropdownValue, loadGraph } from "../../helperFunctions/RequestDropdowns";
+import { Ontology } from "../Interfaces/Ontology";
 
 // ✅ Helper: sanitize ODRL -> flatten rdf:value, @id, remove odrl:/rdf: prefixes
 function sanitizeODRL(obj: any): any {
@@ -76,13 +37,35 @@ function sanitizeODRL(obj: any): any {
 function OwnerApprovedRequestsDetails() {
   const { requestId } = useParams<{ requestId: string }>();
   const [requestDetails, setRequestDetails] = useState<Request | null>(null);
-  const [, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
   const [showContract, setShowContract] = useState<boolean>(false);
   const [contractDetails, setContractDetails] = useState<any | null>(null);
   const [contractLoading, setContractLoading] = useState<boolean>(false);
   const [contractError, setContractError] = useState<string>("");
+  const { t, i18n } = useTranslation();
+  const [labels, setLabels] = useState<any>();
+  const [graph, setGraph] = useState<rdflib.Store>();
+  
+  useEffect(() => {
+    const loadLabels = async () => {
+      if (graph){
+        const actions = await getFeatureDropdownValue(
+          graph,
+          "action"
+        );
+        const purposes = await getFeatureDropdownValue(
+          graph,
+          "purpose"
+        );
+        // NOTE: Currently, we load all left operands for all refinements. In the future, we might want to retrieve left operands that are valid with respect to the current ODRL element.
+        const refinements = await getAttributeDropdownValue(graph);
+        const labels = actions.concat(purposes).concat(refinements);
+        setLabels(labels);
+      }
+    };
+    loadLabels();
+  },[graph, i18n.language]);
 
   useEffect(() => {
     const fetchRequestDetails = async () => {
@@ -98,9 +81,12 @@ function OwnerApprovedRequestsDetails() {
         if (result.success) {
           const req = result.data as Request;
           setRequestDetails(req);
-
-          const parsed = getRequestPermissions(req);
-          setPermissions(parsed);
+          let ontologies = await fetchOntologies() as Ontology[];
+          if (req?.selectedOntologies) {
+            ontologies = ontologies.concat(req.selectedOntologies);
+          }
+          const store = await loadGraph(ontologies);
+          setGraph(store);
         } else {
           setError("Request not found.");
         }
@@ -169,45 +155,14 @@ function OwnerApprovedRequestsDetails() {
     };
   };
 
-  const downloadContract = async (contractId: string | undefined) => {
-    if (!contractId) {
-      alert(
-        "Contract ID not found. Please ensure the contract has been created."
-      );
+  const downloadContract = async () => {
+    if (!requestId) {
+      alert(t("contract_id_not_found"));
       return;
     }
 
     try {
-      const token = localStorage.getItem("token");
-      const API_BASE_URL =
-        import.meta.env.VITE_API_BASE_URL ||
-        "https://dips.soton.ac.uk/consent-manager-api/api";
-
-      const response = await fetch(
-        `${API_BASE_URL}/requests/${requestId}/downloadContract/${contractId}`,
-        {
-          method: "GET",
-          headers: {
-            "x-api-token": token || "",
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to download contract: ${response.status}`);
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `contract_${contractId}.pdf`; // filename
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-
-      console.log("Contract downloaded successfully.");
+      await apiDownloadContract(requestId);
     } catch (err) {
       console.error("Error downloading contract:", err);
     }
@@ -219,11 +174,8 @@ function OwnerApprovedRequestsDetails() {
       return;
     }
 
-    const contractId = requestDetails?.contractId;
-    if (!contractId) {
-      alert(
-        "Contract ID not found. Please ensure the contract has been created."
-      );
+    if (!requestId) {
+      alert(t("contract_id_not_found"));
       return;
     }
 
@@ -232,26 +184,7 @@ function OwnerApprovedRequestsDetails() {
     setContractError("");
 
     try {
-      const token = localStorage.getItem("token");
-      const API_BASE_URL =
-        import.meta.env.VITE_API_BASE_URL ||
-        "https://dips.soton.ac.uk/consent-manager-api/api";
-
-      const response = await fetch(
-        `${API_BASE_URL}/requests/${requestId}/GetContract/${contractId}`,
-        {
-          method: "GET",
-          headers: {
-            "x-api-token": token || "",
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch contract: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await getContract(requestId);
       setContractDetails(data);
     } catch (err: any) {
       console.error("Error fetching contract details:", err);
@@ -264,7 +197,7 @@ function OwnerApprovedRequestsDetails() {
   if (loading) return <LoadingSpinner />;
   if (error) return <div className="text-danger">{error}</div>;
   if (!requestDetails)
-    return <div className="text-danger">No request details available.</div>;
+    return <div className="text-danger">{t("no_request_details_available")}</div>;
 
   return (
     <>
@@ -274,10 +207,10 @@ function OwnerApprovedRequestsDetails() {
           to="/ownerBase/ownerApprovedRequests"
           role="button"
         >
-          <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;Back
+          <i className="fa-solid fa-arrow-left"></i>&nbsp;&nbsp;&nbsp;{t("back")}
         </Link>
         <h3 className="mt-4">{requestDetails.requestName}</h3>
-        <h5 className="mt-4 mb-3">Requester details</h5>
+        <h5 className="mt-4 mb-3">{t("requester_details")}</h5>
         <p>
           <i className="fa-solid fa-user me-3"></i>
           {requestDetails.requester.requesterName}
@@ -287,132 +220,19 @@ function OwnerApprovedRequestsDetails() {
           {requestDetails.requester.requesterEmail}
         </p>
 
-        {(() => {
-          // Parse permissions from ODRL policy or fallback to legacy permissions
-          const parsedPermissions = getRequestPermissions(requestDetails);
+        <text>
+          {requestDetails.extraText ? requestDetails.extraText : ""}
+        </text>
 
-          return parsedPermissions.map((permission, ruleIndex) => (
-            <div key={ruleIndex} className="mb-4 mt-4">
-              <h5>Permission {ruleIndex + 1}</h5>
-              <h5 className="mt-4">What’s being requested</h5>
-              <p>
-                <strong>Dataset:</strong> The requester wants access to data
-                from <strong>{permission.dataset}</strong>.
-              </p>
-              <p>
-                <strong>Action:</strong> The requester wants to{" "}
-                <strong>{permission.action}</strong> to this dataset.
-              </p>
-              <p>
-                <strong>Purpose:</strong> This request is for{" "}
-                <strong>{permission.purpose}</strong> reasons.
-              </p>
-
-              {/* Show generic ODRL constraints */}
-              {permission.constraints && permission.constraints.length > 0 && (
-                <div className="mt-3">
-                  <h6>Policy Constraints:</h6>
-                  <ul className="list-unstyled ms-3">
-                    {permission.constraints.map((constraint, i) => (
-                      <li key={i} className="mb-1">
-                        <small className="text-muted">
-                          • {constraint.description}
-                        </small>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Show generic ODRL assignees */}
-              {permission.assignees && permission.assignees.length > 0 && (
-                <div className="mt-3">
-                  <h6>Assigned To:</h6>
-                  {permission.assignees.map((assignee, i) => (
-                    <div key={i} className="ms-3">
-                      <p className="mb-1">
-                        <strong>{assignee.source}</strong>
-                      </p>
-                      {assignee.refinements &&
-                        assignee.refinements.map((ref, j) => (
-                          <p key={j} className="mb-1 ms-2">
-                            <small className="text-muted">
-                              └ {ref.description}
-                            </small>
-                          </p>
-                        ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {permission.datasetRefinements?.length > 0 && (
-                <div>
-                  <h5>Dataset conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.datasetRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data about <strong>{ref.attribute}</strong> items
-                        greater than <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.actionRefinements?.length > 0 && (
-                <div>
-                  <h5>Action conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.actionRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Write access to <strong>{ref.attribute}</strong> items
-                        greater than <strong> {ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.purposeRefinements?.length > 0 && (
-                <div>
-                  <h5>Purpose conditions:</h5>
-                  <ul className="list-unstyled">
-                    {permission.purposeRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data will be used for <strong>{ref.attribute}</strong>{" "}
-                        items greater than <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {permission.constraintRefinements?.length > 0 && (
-                <div>
-                  <h5>Constraints:</h5>
-                  <ul className="list-unstyled">
-                    {permission.constraintRefinements.map((ref, i) => (
-                      <li key={i}>
-                        Data should meet the constraint:{" "}
-                        <strong>{ref.attribute}</strong> {ref.instance}{" "}
-                        <strong>{ref.value}</strong>.
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          ));
-        })()}
+        {renderPermissions(requestDetails, t, labels)}
 
         <hr />
         <div className="d-flex gap-3">
           <button
             className={`${styles.primaryButton} btn`}
-            onClick={() => downloadContract(requestDetails?.contractId)}
+            onClick={() => downloadContract()}
           >
-            Download Contract
+            {t("download_contract")}
           </button>
 
           <button
@@ -425,7 +245,7 @@ function OwnerApprovedRequestsDetails() {
 
         {showContract && (
           <div className="mt-3 bg-light p-3 rounded border">
-            {contractLoading && <p>Loading contract...</p>}
+            {contractLoading && <p>${t("loading_contract")}...</p>}
             {contractError && <p className="text-danger">{contractError}</p>}
             {!contractLoading && !contractError && (
               <pre style={{ whiteSpace: "pre-wrap" }}>
