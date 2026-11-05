@@ -190,11 +190,19 @@ router.post("/create", async (req, res) => { //TODO: add authentication
     const token = req.headers.authorization.substring(7);
     const verification = await verify(token);
 
-    if (!verification) {
-      return res.status(401).json({
-        error: "Invalid token",
-        success: false,
-      });
+    if (!verification?.success) {
+      if (verification?.reason === "Token expired") {
+        return res.status(401).json({
+          error: "TOKEN_EXPIRED",
+          success: false,
+        })
+      }
+      else{
+        return res.status(401).json({
+          error: "Invalid token",
+          success: false,
+        });
+      }
     }
 
     if (!email || !role) {
@@ -983,9 +991,9 @@ router.delete("/user/:email", async (req, res) => {
     const userDoc = await db.collection("users").findOne({email: email});
 
     if (!userDoc) {
-      return res.status(200).json({
-        success: true,
-        message: "User deletion completed"
+      return res.status(400).json({
+        success: false,
+        message: "User deletion failed."
       })
     }
 
@@ -1032,11 +1040,8 @@ router.delete("/user/:email", async (req, res) => {
 
           if (!updateRequests) {
             res.json({
-              success: true,
-              message: "User deletion completed",
-              details: {
-                externalApiDeleted: externalApiDeleteSuccess,
-              },
+              success: false,
+              message: "User deletion failed.",
             });
           }
         }
@@ -1050,9 +1055,6 @@ router.delete("/user/:email", async (req, res) => {
             res.json({
               success: true,
               message: "Request deletion completed",
-              details: {
-                externalApiDeleted: externalApiDeleteSuccess,
-              },
             });
           }
         }
