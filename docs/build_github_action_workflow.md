@@ -26,9 +26,11 @@ LTS, kernel `6.8.0-1070-azure`, and Docker Compose `v2.38.2`. This is an observe
 run duration, not a performance guarantee. The application feature-test suite has
 not yet been integrated.
 
-An earlier MongoDB startup failure on the Ubuntu 24.04 runner was resolved for
-the successful run by selecting `ubuntu-22.04`. Section 12 records the diagnosis
-and the runner compatibility considerations.
+[//]: # (An earlier MongoDB startup failure on the Ubuntu 24.04 runner was resolved for)
+
+[//]: # (the successful run by selecting `ubuntu-22.04`. Section 12 records the diagnosis)
+
+[//]: # (and the runner compatibility considerations.)
 
 A passing environment check establishes service readiness within the checks
 implemented here. Login, consent creation and contract operations require
@@ -40,7 +42,7 @@ The local setup uses the parent Compose file, with Consent-Manager cloned inside
 `dips-local-dev`. Keycloak has its own Compose file within the parent repository:
 
 ```text
-/opt/DataPACT/local_test/dips-local-dev/
+/opt/local_test/dips-local-dev/
 ├── .env
 ├── docker-compose.yml
 ├── Consent-Manager/
@@ -72,7 +74,6 @@ Paths below are relative to Consent-Manager:
 | [`ci/environment.py`](../ci/environment.py) | Implements `prepare`, `validate`, `start`, `check`, `logs` and `stop` |
 | [`ci/test_environment.py`](../ci/test_environment.py) | Tests configuration isolation, guard conditions and failure handling |
 | [`ci/README.md`](../ci/README.md) | Short operational guide |
-| [`docs/build_github_action_workflow.md`](build_github_action_workflow.md) | Detailed implementation and troubleshooting record |
 
 The implementation uses a single Python script with subcommands rather than
 separate shell scripts for each stage. It uses Python's standard library; the
@@ -80,10 +81,10 @@ helper tests do not need a Python package installation.
 
 ## 4. Branch and dependency versions
 
-The branch was created from the local `dips-branch-mongodb` checkout:
+The branch was created from the local latest branch `dips-branch-mongodb` of Consent-Manager:
 
 ```bash
-cd /opt/DataPACT/local_test/dips-local-dev/Consent-Manager
+cd /opt/local_test/dips-local-dev/Consent-Manager
 git switch -c consent-manager-environment-setup
 ```
 
@@ -96,12 +97,12 @@ git switch consent-manager-environment-setup
 
 The initial dependency manifest contains these revisions:
 
-| Component | Repository | Pinned commit |
-| --- | --- | --- |
-| Parent environment | `DIPS-Tools/dips-local-dev` | `fadb8437e6092ba68828a81ef05e78419966eb5d` |
-| User Management | `DATAPACT/User-Management` | `1d0350a5e87d8eff1a26a2b3e8ca540a61cfc50e` |
-| Contract Service | `DATAPACT/Contract_Service` | `201f0bfee9fada981421a766ef61409087ab539d` |
-| Negotiation Tool | `DATAPACT/Negotiation-Tool` | `baa6faed403a8acf03a8aeb781be028281fca5a2` |
+| Component | Repository |  
+| --- | --- |  
+| Parent environment | `DIPS-Tools/dips-local-dev` | 
+| User Management | `DATAPACT/User-Management` | 
+| Contract Service | `DATAPACT/Contract_Service` |
+| Negotiation Tool | `DATAPACT/Negotiation-Tool` |
 
 `ci/dependencies.json` is the source of truth if these revisions change later.
 Consent-Manager itself uses the workflow revision being tested, not a fixed
@@ -125,8 +126,6 @@ The current workflow expects this repository secret:
 | **Name** | `CI_REPO_READ_TOKEN` |
 | **Secret** | The actual GitHub-generated access token |
 
-The Secret is not your GitHub password, the token's descriptive name, or the
-contents of the local `.env` file.
 
 ### Token scope across organizations
 
@@ -203,7 +202,7 @@ to a branch matched by the workflow. The manual trigger is an additional entry
 point, subject to the default-branch requirement described below.
 
 The VM contains a fresh job workspace identified by `$GITHUB_WORKSPACE`.
-GitHub does not read the developer's `/opt/DataPACT/...` directory or use the
+GitHub does not read the developer's `/opt/...` directory or use the
 developer's running containers. Source files must be available in the repositories
 and revisions selected by the workflow. The VM is temporary; this workflow does
 not publish a persistent application endpoint for users to visit after the run.
@@ -479,7 +478,7 @@ The following implementation checks passed:
 Run the helper tests without starting containers:
 
 ```bash
-cd /opt/DataPACT/local_test/dips-local-dev/Consent-Manager
+cd /opt/local_test/dips-local-dev/Consent-Manager
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s ci -p 'test_*.py' -v
 ```
 
@@ -527,7 +526,7 @@ extend the checks to application features that are not part of the workflow.
 Ensure the repository secret is configured before pushing. Review the files:
 
 ```bash
-cd /opt/DataPACT/local_test/dips-local-dev/Consent-Manager
+cd /opt/local_test/dips-local-dev/Consent-Manager
 git branch --show-current
 git status --short
 git add .github/workflows/environment-check.yml ci/ docs/build_github_action_workflow.md

@@ -19,6 +19,8 @@ SERVICES = [
     "mongo", "zookeeper", "kafka", "user-management-api", "user-management-web",
     "contract-service", "negotiation-api", "consent-manager-api", "consent-manager",
 ]
+
+
 REQUIRED_CLIENTS = [
     "consent-manager", "user-management-api", "user-management-web",
     "contract-service", "negotiation-api",

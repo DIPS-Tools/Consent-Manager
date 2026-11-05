@@ -1,4 +1,4 @@
-name: Consent-Manager environment startup
+name: Consent-Manager environment auto-checking
 
 on:
   workflow_dispatch:
@@ -15,12 +15,14 @@ concurrency:
 jobs:
   environment:
     name: Build and check environment
+    # using 22.04 is okay, 24.04 is wrong
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
+      # show the OS and Docker kenal
       - name: Show runner OS and Docker kernel
         run: |
           cat /etc/os-release
