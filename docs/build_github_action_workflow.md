@@ -683,9 +683,7 @@ suite being integrated.
 Stage one is complete when a fresh GitHub-hosted runner can check out the intended
 revisions, build/start both Compose projects, import the realm without manual
 configuration, pass all readiness checks, retain diagnostic artifacts, and clean
-up the disposable resources. A successful run of the current environment workflow
-has been reported on Ubuntu 22.04, satisfying the environment setup validation
-stage for that run.
+up the disposable resources.
 
 Stage two is complete only after the agreed application tests run and report
 their results. Keep the workflow's environment-readiness result distinct from

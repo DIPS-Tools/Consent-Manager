@@ -1,4 +1,5 @@
-"""Regression checks for isolation and CI realm preparation; no Docker daemon needed."""
+"""Regression checks for isolation and CI realm preparation;
+no Docker daemon needed."""
 
 import importlib.util
 import json
